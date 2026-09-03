@@ -1,0 +1,10 @@
+{
+  "name": "placar-futebol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Placar de futebol ao vivo — estático, sem build, sem dependências",
+  "scripts": {
+    "test": "node --test "test/*.test.js""
+  }
+}
