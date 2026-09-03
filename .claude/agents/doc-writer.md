@@ -68,8 +68,14 @@ Se um número não puder ser medido, escreva "não medido" em vez de inventar.
 
 ## O que NÃO fazer
 
+- **NUNCA leia o `.env`, em nenhuma hipótese** — nem para conferir se existe, nem para
+  diagnosticar, nem parcialmente por `grep`/`head`. Ele guarda a `APISPORTS_KEY` que o dev usa em
+  consultas manuais. "Só queria ver se a chave está configurada" é o caminho que vaza credencial
+  para um transcript. Se precisar saber, **pergunte ao dev**; não verifique.
 - **NUNCA escreva a chave da API em documento nenhum**, nem como exemplo, nem mascarada. O README
-  explica como cadastrá-la como secret do Worker pelo painel; o valor nunca aparece.
+  explica como cadastrá-la como secret do painel do Cloudflare; o valor nunca aparece, e o
+  `wrangler.toml` versionado nunca a contém. Ao documentar o setup, descreva o passo no painel —
+  não peça ao leitor que cole a chave em arquivo do repositório.
 - **NUNCA atualize `ESTADO.md` sem atualizar `HISTORICO.md`** (e vice-versa). Se só um dos dois for
   atualizado, a próxima sessão começa com informação errada.
 - **NUNCA apague entradas do `HISTORICO.md`.** Ele acumula. Se precisar arquivar, mova para

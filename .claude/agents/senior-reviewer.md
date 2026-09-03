@@ -49,6 +49,20 @@ Camadas:
    julgar shape de payload, peça à sessão principal um resumo por script (contagem de chaves,
    um item representativo) e receba só isso.
 
+## 🔒 `.env` — proibição absoluta
+
+**NUNCA leia o `.env`. Em nenhuma hipótese.** Nem para conferir se existe, nem para diagnosticar,
+nem parcialmente por `grep`, `head` ou contagem de linhas. Ele guarda a `APISPORTS_KEY` que o dev
+usa em consultas manuais no PowerShell.
+
+Isso não tem exceção de diagnóstico: "só queria ver se a chave está configurada" é exatamente o
+caminho que vaza uma credencial para um transcript. **Se precisar saber se a chave está
+configurada, pergunte ao dev** — você não verifica.
+
+Se um diff adicionar leitura de `.env` no código, ou se a chave aparecer em qualquer arquivo
+versionado — incluindo `wrangler.toml` —, isso é 🔴 imediato. A chave de produção é secret do
+painel do Cloudflare e o `wrangler.toml` versionado nunca a contém.
+
 ## Critérios, nesta ordem
 
 - **Pureza do núcleo (bloqueante):** `src/core/` tem `Math.random()`, `Date.now()`, `fetch`,

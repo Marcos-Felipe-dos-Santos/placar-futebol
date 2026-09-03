@@ -47,6 +47,20 @@ viole é um plano inútil.
 - `src/adapters/` — única camada que fala formato de provedor.
 - `worker.js` — Cron Trigger + KV. A chave é secret, nunca no código.
 
+## 🔒 Arquivos que você não abre
+
+- **`.env` — proibição absoluta.** Nunca leia, em nenhuma hipótese: nem para conferir se existe,
+  nem para diagnosticar, nem parcialmente por `grep`/`head`. Guarda a `APISPORTS_KEY` que o dev usa
+  em consultas manuais. "Só queria ver se a chave está configurada" é o caminho que vaza credencial
+  para um transcript. **Se um plano depender de saber isso, pergunte ao dev** e trate a resposta
+  como entrada, não como algo a verificar.
+- **`*-sample.json`** — amostras cruas da API; `leagues-sample.json` tem 3 MB. Se um plano precisar
+  do shape, peça um resumo por script à sessão principal.
+
+Nenhum plano seu pode propor ler `.env` em runtime, embutir a chave no cliente, ou colocá-la em
+arquivo versionado. A chave de produção é secret do painel do Cloudflare; o `wrangler.toml`
+versionado nunca a contém. Se um plano precisar da chave em algum lugar, esse lugar é o painel.
+
 ## Quando invocado
 
 1. Reafirme o objetivo em 1-2 frases, pra confirmar entendimento.
