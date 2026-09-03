@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { diffFixtures, keepLatestSnapshot } from '../src/core/diff.js';
-import { shouldAlert, eventKey } from '../src/core/alerts.js';
+import { diffFixtures } from '../src/core/diff.js';
+import { shouldAlert } from '../src/core/alerts.js';
+import { applySnapshot } from '../src/core/session.js';
 import { makeFixture, makeSnapshot, evolve } from './helpers/fixtures.js';
 
 /**
@@ -26,23 +27,20 @@ const T0 = 1_700_000_000_000;
  * @returns {{sons: string[], alerted: Record<string, number>}}
  */
 function reproduzirSessao(snapshots) {
-  /** @type {Record<string, number>} */
-  const alerted = {};
   /** @type {string[]} */
   const sons = [];
-  let anterior = null;
+  /** @type {number[]} */
+  const ressincronizacoes = [];
+  let state = null;
 
   for (const atual of snapshots) {
-    for (const evento of diffFixtures(anterior, atual)) {
-      if (shouldAlert(evento, { alerted, nowMs: atual.fetchedAtMs, enabled: true })) {
-        alerted[eventKey(evento)] = atual.fetchedAtMs;
-        sons.push(`${evento.fixtureId} ${evento.goalsBefore}->${evento.goalsAfter}`);
-      }
-    }
-    anterior = keepLatestSnapshot(anterior, atual);
+    const r = applySnapshot(state, atual);
+    state = r.state;
+    if (r.resynced) ressincronizacoes.push(r.swallowedGoals);
+    sons.push(...r.events.map((e) => `${e.fixtureId} ${e.goalsBefore}->${e.goalsAfter}`));
   }
 
-  return { sons, alerted };
+  return { sons, ressincronizacoes, state };
 }
 
 test('réplica atrasada do KV no meio da sessão não produz som duplicado', () => {
@@ -95,12 +93,17 @@ test('uma partida real de três gols toca exatamente três vezes', () => {
 
 test('aba suspensa por duas horas não despeja alertas acumulados ao voltar', () => {
   const base = makeFixture({ id: 'a', homeGoals: 0, awayGoals: 0 });
-  const { sons } = reproduzirSessao([
+  const { sons, ressincronizacoes } = reproduzirSessao([
     makeSnapshot(T0, [base]),
     makeSnapshot(T0 + 2 * 60 * 60 * 1000, [evolve(base, { homeGoals: 3, awayGoals: 2 })]),
   ]);
 
   assert.deepEqual(sons, [], 'ressincronização é silenciosa');
+  assert.deepEqual(
+    ressincronizacoes,
+    [5],
+    'mas não muda: a UI recebe a contagem para avisar que 5 gols podem ter sido perdidos',
+  );
 });
 
 test('gol que chega junto com a transição para encerrado ainda toca', () => {

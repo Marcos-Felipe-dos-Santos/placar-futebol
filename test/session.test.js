@@ -157,6 +157,19 @@ test('som bloqueado: nada é emitido e nada fica pendente', () => {
   assert.deepEqual(r2.events, []);
 });
 
+test('partida repetida no mesmo snapshot não produz dois sons', () => {
+  // Não deveria acontecer com live=all, mas se o provedor repetir uma partida
+  // o dedupe tem que consultar o registro sendo acumulado, e não o anterior.
+  const antes = makeFixture({ id: 'a', homeGoals: 0 });
+  const depois = evolve(antes, { homeGoals: 1 });
+
+  const s0 = makeSnapshot(T0, [antes, { ...antes }]);
+  const s1 = makeSnapshot(T0 + 120_000, [depois, { ...depois }]);
+
+  const r = applySnapshot(applySnapshot(null, s0).state, s1);
+  assert.equal(r.events.length, 1, 'um gol, um som, mesmo com a partida duplicada no payload');
+});
+
 test('applySnapshot é puro: não muta o estado anterior nem os snapshots', () => {
   const base = makeFixture({ id: 'a', homeGoals: 0 });
   const s0 = makeSnapshot(T0, [base]);
