@@ -1,0 +1,11 @@
+# Segredos — nunca versionar
+.env
+.dev.vars
+*.local
+.secrets/
+
+# Amostras de resposta da API (podem conter dados de conta / volume grande)
+live-sample.json
+
+# Dependências (o projeto não usa build, mas ferramentas locais podem criar)
+node_modules/
