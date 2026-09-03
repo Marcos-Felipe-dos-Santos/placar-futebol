@@ -190,6 +190,27 @@ test('partida que some do snapshot novo não atrapalha o diff das demais', () =>
   assert.equal(eventos[0].fixtureId, 'b');
 });
 
+test('o pareamento entre snapshots é por id, não por posição', () => {
+  // Guarda contra teste vazio: se o pareamento fosse posicional, o primeiro
+  // caso viraria um gol de 0 para 1 entre partidas que não têm nada a ver.
+  const partidaA = makeFixture({ id: 'a', homeGoals: 0 });
+  const outraPartida = makeFixture({ id: 'b', homeGoals: 1 });
+  assert.deepEqual(
+    diffFixtures(makeSnapshot(T0, [partidaA]), makeSnapshot(T1, [outraPartida])),
+    [],
+    'partidas distintas na mesma posição não podem ser comparadas entre si',
+  );
+
+  assert.equal(
+    diffFixtures(
+      makeSnapshot(T0, [partidaA]),
+      makeSnapshot(T1, [evolve(partidaA, { homeGoals: 1 })]),
+    ).length,
+    1,
+    'e o mesmo id, esse sim, produz o evento — provando que o caso acima falha pelo motivo certo',
+  );
+});
+
 test('diffFixtures é puro: não muta os snapshots recebidos', () => {
   const antes = makeFixture({ homeGoals: 0 });
   const depois = evolve(antes, { homeGoals: 1 });

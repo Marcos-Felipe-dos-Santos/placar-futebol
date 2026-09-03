@@ -109,8 +109,20 @@ test('regra 6: a cota utilizável cobre a janela de cobertura ao vivo prometida'
   );
 });
 
-test('a janela de cobertura ao vivo é a prometida no projeto', () => {
-  assert.equal(LIVE_WINDOW_MS, 3 * HOUR);
+test('regra 6 reinterpretada: jogo logo depois do reset não é diluído pelas 24h', () => {
+  // 21:30 BRT, meia hora depois do reset das 21:00 — o caso que mata a
+  // leitura literal da regra 6. Diluir 80 requisições por 23,5h daria um
+  // poll a cada ~18 minutos e o produto não existiria.
+  const ms = computePollInterval({
+    quotaRemaining: 90,
+    msUntilReset: 23.5 * HOUR,
+    hasLiveFavorite: true,
+  });
+  assert.ok(
+    ms <= 150_000,
+    `partida começando logo após o reset recebeu intervalo de ${(ms / 60_000).toFixed(1)}min; a cota é orçamento de janela de jogo, não média diária`,
+  );
+  assert.ok(ms <= LIVE_WINDOW_MS, 'a janela de orçamento limita o intervalo, não o tempo até o reset');
 });
 
 test('conforme a cota some, o intervalo cresce — degradação, não parada seca', () => {
