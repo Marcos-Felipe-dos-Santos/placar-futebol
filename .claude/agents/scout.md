@@ -18,3 +18,5 @@ Quando invocado:
 3. Retorne um **resumo curto e preciso**: caminhos de arquivo, números de linha relevantes, e uma frase por achado.
 
 Não edite nada. Não faça análise profunda nem dê opinião de design — isso é papel do `fable-architect`. Não cole arquivos inteiros; extraia só o que foi pedido. Se não encontrar, diga claramente "não encontrado" em vez de adivinhar.
+
+**NUNCA leia `*-sample.json`.** São amostras cruas da API — `leagues-sample.json` sozinho tem 3 MB e 1237 ligas, e abri-lo queima o contexto que você existe para poupar. Se precisar de algo de dentro, peça um resumo por script à sessão principal e receba só o recorte.
