@@ -6,6 +6,7 @@ import {
   IDLE_INTERVAL_MS,
   LIVE_WINDOW_MS,
   AGENDA_RESERVE,
+  MIN_INTERVAL_MS,
 } from '../src/core/polling.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -48,6 +49,60 @@ test('com favorito ao vivo e cota folgada, nunca desce abaixo do intervalo ativo
   assert.ok(
     ms >= ACTIVE_INTERVAL_MS,
     'cota sobrando perto do reset não autoriza queimar requisição a cada segundo',
+  );
+});
+
+test('perto do reset com cota sobrando, não há rajada', () => {
+  // 40 requisições utilizáveis e 90s até o reset: a conta de
+  // sustentabilidade dá ~2,2s. Sem piso, o cron abriria uma rajada — e a
+  // API-Football corta pico anormal de tráfego sem aviso.
+  const ms = computePollInterval({
+    quotaRemaining: 50,
+    msUntilReset: 90_000,
+    hasLiveFavorite: true,
+  });
+  assert.ok(ms >= MIN_INTERVAL_MS, `veio ${ms}ms, abaixo do piso absoluto`);
+  assert.ok(ms >= ACTIVE_INTERVAL_MS, `veio ${ms}ms, abaixo do ritmo ativo`);
+  assert.ok(
+    ms >= 90_000,
+    'com 90s até o reset, no máximo uma requisição pode caber antes dele',
+  );
+});
+
+// O piso é medido contra 30s literais, e não contra MIN_INTERVAL_MS. Assertar
+// `ms >= MIN_INTERVAL_MS` seria tautológico: bastaria alguém baixar a
+// constante para 1 e a proteção sumiria com a suíte verde.
+const PISO_MINIMO_DEFENSAVEL_MS = 30_000;
+
+test('o piso absoluto sobrevive a opções que tentariam furá-lo', () => {
+  const ms = computePollInterval(
+    { quotaRemaining: 100, msUntilReset: 30_000, hasLiveFavorite: true },
+    { activeMs: 1_000, idleMs: 1_000 },
+  );
+  assert.ok(
+    ms >= PISO_MINIMO_DEFENSAVEL_MS,
+    `opção activeMs baixa furou o piso: veio ${ms}ms. O piso não pode depender das opções`,
+  );
+});
+
+test('o piso absoluto vale também quando a cota utilizável acabou', () => {
+  // activeMs baixo de propósito: sem o piso duro, o ramo de cota esgotada
+  // devolveria os 5s de msUntilReset e o cron voltaria a bater em seguida.
+  const ms = computePollInterval(
+    { quotaRemaining: 0, msUntilReset: 5_000, hasLiveFavorite: true },
+    { activeMs: 1_000 },
+  );
+  assert.ok(ms >= PISO_MINIMO_DEFENSAVEL_MS, `veio ${ms}ms`);
+});
+
+test('o piso absoluto é um número defensável, não um placebo', () => {
+  assert.ok(
+    MIN_INTERVAL_MS >= PISO_MINIMO_DEFENSAVEL_MS,
+    `MIN_INTERVAL_MS = ${MIN_INTERVAL_MS}ms não protege contra rajada nenhuma`,
+  );
+  assert.ok(
+    MIN_INTERVAL_MS <= ACTIVE_INTERVAL_MS,
+    'um piso acima do ritmo ativo tornaria a banda 120–150s inalcançável',
   );
 });
 

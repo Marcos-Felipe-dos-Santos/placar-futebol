@@ -21,6 +21,18 @@ const HOUR_MS = 60 * 60 * 1000;
 export const ACTIVE_INTERVAL_MS = 120_000;
 
 /**
+ * Piso absoluto, aplicado por último e imune às opções.
+ *
+ * O ritmo normal já é limitado por `ACTIVE_INTERVAL_MS`, mas aquele piso vem
+ * de `options.activeMs` e some se o chamador sobrescrever a opção. Este aqui
+ * não sai do caminho: com a cota grande e o reset a segundos de distância, a
+ * conta de sustentabilidade tende a zero e sem trava dura o cron dispararia
+ * uma rajada. A API-Football corta picos anormais de tráfego sem aviso, e
+ * perder a chave custa mais caro do que perder alguns minutos de cobertura.
+ */
+export const MIN_INTERVAL_MS = 60_000;
+
+/**
  * Ritmo sem nenhum jogo ao vivo de interesse. Serve só para perceber que uma
  * partida começou; é aqui que a cota é preservada para quando importa.
  */
@@ -60,8 +72,17 @@ function finiteOrZero(value) {
  *   `x-ratelimit-requests-remaining` da última resposta upstream.
  * @param {number} input.msUntilReset  Tempo até o reset da cota (00:00 UTC).
  * @param {boolean} input.hasLiveFavorite
- *   Se há partida ao vivo que justifica gastar cota agora. É o gate: sem
- *   isso, o cron não deveria estar queimando o orçamento.
+ *   PREMISSA DE PORTÃO, NÃO MODIFICADOR DE RITMO.
+ *
+ *   O contrato com o PR 2 é: quando `false`, o handler do cron NÃO chama o
+ *   upstream. O `IDLE_INTERVAL_MS` devolvido aqui é só o intervalo com que o
+ *   portão volta a ser reavaliado — não uma autorização para gastar cota mais
+ *   devagar.
+ *
+ *   Tratar isso como modificador é o jeito mais fácil de arruinar o dia: os
+ *   jogos da manhã de domingo consumiriam a janela de 3h e a noite, que é
+ *   quando você está assistindo, ficaria descoberta. A cota só se move quando
+ *   há partida ao vivo de interesse.
  * @param {object} [options]
  * @param {number} [options.reserve=AGENDA_RESERVE]
  * @param {number} [options.activeMs=ACTIVE_INTERVAL_MS]
@@ -85,7 +106,7 @@ export function computePollInterval(input, options = {}) {
 
   // Reserva da agenda intocável: nada de poll ao vivo até o reset.
   if (usableQuota <= 0) {
-    return Math.max(msUntilReset, activeMs);
+    return Math.max(msUntilReset, activeMs, MIN_INTERVAL_MS);
   }
 
   const desiredMs = input?.hasLiveFavorite ? activeMs : idleMs;
@@ -96,5 +117,5 @@ export function computePollInterval(input, options = {}) {
   const budgetWindowMs = Math.min(msUntilReset, liveWindowMs);
   const sustainableMs = budgetWindowMs / usableQuota;
 
-  return Math.max(desiredMs, Math.ceil(sustainableMs));
+  return Math.max(desiredMs, Math.ceil(sustainableMs), MIN_INTERVAL_MS);
 }
