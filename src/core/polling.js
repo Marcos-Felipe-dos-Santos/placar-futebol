@@ -100,6 +100,12 @@ function finiteOrZero(value) {
  *   jogos da manhã de domingo consumiriam a janela de 3h e a noite, que é
  *   quando você está assistindo, ficaria descoberta. A cota só se move quando
  *   há partida ao vivo de interesse.
+ *
+ *   "De interesse" tem definição precisa e ela mora em `core/leagues.js`:
+ *   partida ao vivo em `DEFAULT_LEAGUE_IDS` ou em liga favoritada pelo
+ *   usuário — não qualquer uma das 1237 ligas que `live=all` devolve. Numa
+ *   terça sem jogo brasileiro isso é `false` o dia todo e o custo é zero,
+ *   mesmo com centenas de partidas ao vivo no mundo.
  * @param {object} [options]
  * @param {number} [options.reserve=AGENDA_RESERVE]
  * @param {number} [options.activeMs=ACTIVE_INTERVAL_MS]

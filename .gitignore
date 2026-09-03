@@ -4,8 +4,14 @@
 *.local
 .secrets/
 
+# Config local do Claude Code: carrega o e-mail do usuario nas regras de
+# permissao e e especifica desta maquina. Os agentes em .claude/agents/ SAO
+# versionados.
+.claude/settings.local.json
+
 # Amostras de resposta da API (podem conter dados de conta / volume grande)
 live-sample.json
+leagues-sample.json
 
 # Dependências (o projeto não usa build, mas ferramentas locais podem criar)
 node_modules/
