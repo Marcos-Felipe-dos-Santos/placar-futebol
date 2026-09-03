@@ -1,0 +1,55 @@
+# Configuração do Cloudflare Worker.
+#
+# ESTE ARQUIVO NUNCA CONTÉM A CHAVE DA API. `API_FOOTBALL_KEY` é Secret,
+# cadastrada pelo painel do Cloudflare (Workers & Pages > o Worker > Settings >
+# Variables and Secrets > Add > tipo Secret). Secret não aparece em
+# `wrangler.toml`, não volta na leitura pelo painel e não entra em log.
+#
+# Se algum dia aparecer aqui um `[vars]` com a chave, isso é vazamento: o
+# arquivo é versionado e público junto com o repositório.
+#
+# O deploy pode ser feito inteiro pelo painel — este arquivo documenta o que
+# configurar. O README tem o passo a passo.
+
+name = "placar-futebol"
+main = "worker.js"
+compatibility_date = "2026-09-03"
+
+# ES modules sem build: o Worker importa src/**/*.js diretamente.
+# Nenhum bundler, nenhuma dependência.
+
+# --- KV ----------------------------------------------------------------------
+# Um namespace só, com três chaves:
+#   snapshot  último resultado BOM; só sobrescrito quando a busca deu certo
+#   state     cota, última busca, falhas consecutivas, backoff
+#   agenda    partidas do dia, que alimentam o portão do cron
+#
+# No painel: Storage & Databases > KV > Create namespace > "placar-futebol-kv".
+# Depois, no Worker: Settings > Bindings > Add > KV Namespace,
+# nome da variável PLACAR_KV, apontando para esse namespace.
+#
+# `id` é preenchido ao criar o namespace; o valor não é segredo.
+[[kv_namespaces]]
+binding = "PLACAR_KV"
+id = "PREENCHER_COM_O_ID_DO_NAMESPACE"
+
+# --- Cron --------------------------------------------------------------------
+# Dispara a cada minuto. O minuto é só a granularidade da DECISÃO — não é o
+# ritmo de gasto: a maioria dos tiques termina sem chamar o upstream e sem
+# escrever no KV. Quem decide gastar é `decideCronAction`, e quem define o
+# ritmo é `computePollInterval` (120–150s com jogo ao vivo).
+#
+# Isto importa para o limite de escrita do KV free (~1000/dia): um cron por
+# minuto que gravasse sempre daria 1440 escritas e estouraria antes da cota da
+# API-Football. Só há escrita quando houve busca real, o que dá ~180–400/dia
+# no pior caso (duas chaves por busca).
+[triggers]
+crons = ["* * * * *"]
+
+# --- Observação sobre limites ------------------------------------------------
+# Plano free do Workers: 100.000 requisições/dia. O navegador polla /api/live a
+# cada 10–15s, o que dá ~6.000–8.600 requisições/dia por aba aberta o dia
+# inteiro. Confortável para uso pessoal; não é o limite que aperta primeiro.
+#
+# O limite que aperta é a cota da API-Football: 100/dia, GLOBAIS DA CHAVE.
+# Por isso o fetch handler nunca chama o upstream.

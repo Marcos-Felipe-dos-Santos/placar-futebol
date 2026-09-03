@@ -143,3 +143,22 @@ export function computePollInterval(input, options = {}) {
 
   return Math.max(desiredMs, Math.ceil(sustainableMs), MIN_INTERVAL_MS);
 }
+
+/**
+ * Há cota utilizável, isto é, acima da reserva da agenda?
+ *
+ * Existe para que o portão do cron não precise inferir exaustão a partir do
+ * intervalo. Inferir conflava duas coisas diferentes — "a cota acabou" e "o
+ * reset está perto" — e um intervalo longo desde a última busca furava o
+ * guard: com a reserva no limite e três horas sem buscar, a comparação
+ * `agora - ultimaBusca >= intervalo` dava verdadeira e a reserva ia embora.
+ *
+ * @param {number} quotaRemaining
+ * @param {object} [options]
+ * @param {number} [options.reserve=AGENDA_RESERVE]
+ * @returns {boolean}
+ */
+export function hasUsableQuota(quotaRemaining, options = {}) {
+  const { reserve = AGENDA_RESERVE } = options;
+  return Math.floor(finiteOrZero(quotaRemaining) - reserve) > 0;
+}
