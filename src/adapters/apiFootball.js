@@ -30,3 +30,6 @@ export function toFixtures(rawResponse) {
   void rawResponse;
   throw new Error('not implemented: awaiting real API shape');
 }
+
+/** @type {Record<string, import('../core/types.js').FixtureStatus>} */
+export const STATUS_MAP = {};
