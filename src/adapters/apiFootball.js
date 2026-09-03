@@ -26,16 +26,23 @@
  *
  * ## `status.elapsed` satura, e `status.extra` existe
  *
- * `elapsed` trava no teto do período: vale 45 no primeiro tempo com acréscimo
- * correndo e 90 no segundo. A captura tem duas partidas com `elapsed: 45` e
- * `status.extra` valendo 3 e 1 — ou seja, **a API expõe o acréscimo, só que
- * num campo separado**.
+ * MEDIDO na captura: `elapsed` trava em 45 no primeiro tempo com acréscimo
+ * correndo. Duas das 19 partidas trazem `elapsed: 45` com `status.extra`
+ * valendo 3 e 1 — ou seja, **a API expõe o acréscimo, só que num campo
+ * separado**.
+ *
+ * NÃO MEDIDO: que o mesmo ocorra no segundo tempo. É a observação do dev, e é
+ * plausível, mas a captura não a sustenta — a única partida com `elapsed: 90`
+ * aqui tem `extra: null`, o que é igualmente compatível com "minuto 90
+ * exato". Um segundo snapshot em horário de pico resolveria.
  *
  * O modelo interno não tem onde guardar isso, e mudá-lo é decisão do dev, não
  * deste adaptador. Então `extra` é **descartado** por ora e `elapsedMin`
  * recebe o `elapsed` cru. Consequências registradas:
  *
- * - A UI do PR 3 mostra `45'` numa partida em 45+3, e `90'` numa em 90+6.
+ * - A UI do PR 3 mostra `45'` numa partida que está em 45+3 — este caso está
+ *   na captura. Se a saturação em `2H` se confirmar, o mesmo valeria para
+ *   `90'`; até lá é hipótese, não observação.
  *   Isso é o que a fonte diz. **Não é bug e não deve ser "consertado"**
  *   inventando o minuto; a informação existe em `status.extra` e o caminho
  *   certo é levá-la ao modelo interno, não estimá-la.
@@ -63,6 +70,18 @@
  *   congelado — congelado não gera alerta falso. Mostrar "cancelado" numa
  *   paragem de dez minutos por chuva seria pior. Se depois for abandonada, o
  *   provedor manda `ABD` e aí sim vira `'cancelled'`.
+ *
+ *   Há um argumento a mais, do lado do núcleo: se virassem `'cancelled'`,
+ *   `diff.js` tiraria a confiança do placar **nos dois estados** e o gol
+ *   marcado logo após a retomada seria engolido em silêncio, porque o estado
+ *   anterior era não confiável. `'live'` mantém a linha de base viva.
+ *
+ *   CUSTO NÃO ÓBVIO, do outro eixo: `hasLiveFavorite` é pré-condição de
+ *   portão do cron. Uma partida parada por chuva que fique `SUSP` por uma
+ *   hora conta como ao vivo e mantém o cron gastando requisição a cada 120s
+ *   em jogo nenhum — com 100/dia e reserva de 10, são ~30 requisições de uma
+ *   janela de 3h queimadas. Não há como distinguir sem acrescentar um status
+ *   ao modelo interno, o que é decisão do dev; fica registrado o preço.
  * - `BT` (intervalo da prorrogação) vira `'halftime'`, não `'live'`: é uma
  *   pausa, e é assim que a UI deve pintá-la.
  * - `AWD` e `WO` (vitória técnica, W.O.) viram `'cancelled'`, seguindo o
@@ -117,7 +136,9 @@ const UNKNOWN_STATUS = 'scheduled';
  * @returns {number|null}
  */
 function toGoals(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  // Inteiro não negativo ou nada. `-1` e `2.5` não são placar, e deixá-los
+  // passar colocaria lixo no caminho que decide se um som toca.
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 /**
@@ -126,6 +147,28 @@ function toGoals(value) {
  */
 function toElapsed(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Aceita só string não vazia ou número finito. É o que pode virar chave de
+ * diff ou de filtro sem colidir: um objeto viraria `'[object Object]'` e duas
+ * partidas assim ocupariam a mesma chave.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function toId(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'string' && value !== '') return value;
+  return null;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function toName(value) {
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 /**
@@ -150,31 +193,46 @@ function hasErrors(errors) {
  * @returns {import('../core/types.js').Fixture|null}
  */
 function toFixture(raw) {
-  const id = raw?.fixture?.id;
-  const homeName = raw?.teams?.home?.name;
-  const awayName = raw?.teams?.away?.name;
+  // CAMPOS EXIGIDOS. Sem `id` não há como diffar entre snapshots; sem nome de
+  // time não há o que mostrar; sem `leagueId` a partida nunca casa com
+  // `activeLeagueIds` e some da grade filtrada em silêncio, que é pior do que
+  // não estar lá. Partida sem um destes é inútil, e derrubar o snapshot
+  // inteiro por causa dela seria desproporcional — o guard de "nenhuma
+  // utilizável" em `toFixtures` cobre o caso extremo.
+  const id = toId(raw?.fixture?.id);
+  const homeName = toName(raw?.teams?.home?.name);
+  const awayName = toName(raw?.teams?.away?.name);
+  const leagueId = toId(raw?.league?.id);
 
-  // Sem id não há como diffar entre snapshots; sem nome de time não há o que
-  // mostrar. Nos dois casos a partida é inútil, e derrubar o snapshot inteiro
-  // por causa dela seria pior.
-  if (id == null || typeof homeName !== 'string' || typeof awayName !== 'string') return null;
+  if (id === null || homeName === null || awayName === null || leagueId === null) return null;
 
   const short = raw?.fixture?.status?.short;
 
   return {
-    id: String(id),
+    id,
     homeName,
     awayName,
     homeGoals: toGoals(raw?.goals?.home),
     awayGoals: toGoals(raw?.goals?.away),
-    status: (typeof short === 'string' && STATUS_MAP[short]) || UNKNOWN_STATUS,
+    // `Object.hasOwn` e não `STATUS_MAP[short]`: o mapa é um literal
+    // congelado, não um objeto de protótipo nulo, então `'constructor'`,
+    // `'toString'` e `'__proto__'` devolvem valores truthy da cadeia de
+    // protótipos e escapariam para `Fixture.status`, fora dos cinco valores
+    // do contrato.
+    status: typeof short === 'string' && Object.hasOwn(STATUS_MAP, short)
+      ? STATUS_MAP[short]
+      : UNKNOWN_STATUS,
     elapsedMin: toElapsed(raw?.fixture?.status?.elapsed),
-    // Verbatim: já é ISO 8601 com offset, que é o que o modelo pede. Não
-    // normalizo para `Z` porque reescrever a data introduziria uma conversão
-    // que pode falhar e não acrescenta nada — `Intl.DateTimeFormat` lê as
-    // duas formas.
+    // CAMPOS SÓ DE EXIBIÇÃO, que degradam para vazio em vez de descartar a
+    // partida: não participam de diff nem de filtro, então perdê-los piora a
+    // tela e não a correção.
+    //
+    // `kickoffISO` é verbatim: já é ISO 8601 com offset, que é o que o modelo
+    // pede. Não normalizo para `Z` porque reescrever a data introduziria uma
+    // conversão que pode falhar e não acrescenta nada — `Intl.DateTimeFormat`
+    // lê as duas formas.
     kickoffISO: typeof raw?.fixture?.date === 'string' ? raw.fixture.date : '',
-    leagueId: String(raw?.league?.id ?? ''),
+    leagueId,
     leagueName: typeof raw?.league?.name === 'string' ? raw.league.name : '',
   };
 }
@@ -206,11 +264,45 @@ export function toFixtures(rawResponse) {
     throw new Error('api-football: envelope sem array `response`');
   }
 
+  // Truncamento. Se `paging.total` passa de 1, ou se `results` discorda do
+  // tamanho de `response`, faltam partidas. Entregar a página 1 em silêncio
+  // faria um favorito sumir e reaparecer conforme a contagem global oscila —
+  // e para `diffFixtures` partida que some e volta é partida sem linha de
+  // base, então o gol simplesmente não sai.
+  //
+  // Lançar é escolha deliberada de falhar visível: o Worker preserva o último
+  // snapshot bom e a faixa de staleness fica vermelha, em vez de entregar
+  // meia verdade com cara de verdade inteira. A captura de 2026-09-03 traz
+  // `paging: {current:1, total:1}` e `results` igual ao tamanho, então este
+  // caminho não dispara com o que já foi observado.
+  const total = envelope.paging?.total;
+  if (typeof total === 'number' && total > 1) {
+    throw new Error(`api-football: resposta truncada, paging.total = ${total}`);
+  }
+  if (typeof envelope.results === 'number' && envelope.results !== envelope.response.length) {
+    throw new Error(
+      `api-football: resposta truncada, results = ${envelope.results} e response tem ${envelope.response.length}`,
+    );
+  }
+
   /** @type {import('../core/types.js').Fixture[]} */
   const fixtures = [];
   for (const raw of envelope.response) {
     const fixture = toFixture(raw);
     if (fixture !== null) fixtures.push(fixture);
+  }
+
+  // A outra metade do guard de silêncio. O envelope lança para não fazer o
+  // Worker gravar snapshot vazio por cima de um bom; sem isto, a mesma coisa
+  // acontecia pelo caminho por item — bastava todo item ser descartado e a
+  // função sinalizava sucesso com lista vazia.
+  //
+  // `response.length > 0 &&` é essencial: resposta legitimamente sem partidas
+  // ao vivo é caso normal e continua devolvendo `[]`.
+  if (envelope.response.length > 0 && fixtures.length === 0) {
+    throw new Error(
+      `api-football: ${envelope.response.length} partidas na resposta e nenhuma utilizável`,
+    );
   }
 
   return fixtures;

@@ -89,7 +89,7 @@ test('elapsed satura em 45 no primeiro tempo com acréscimo correndo', () => {
   assert.equal(f.elapsedMin, 45);
 });
 
-test('elapsed satura em 90 no segundo tempo', () => {
+test('elapsed 90 em 2H passa verbatim e continua live', () => {
   assert.equal(segundoTempoSaturado.fixture.status.elapsed, 90, 'premissa do arquivo');
   const [f] = toFixtures(envelope([segundoTempoSaturado]));
   assert.equal(f.elapsedMin, 90);
@@ -210,7 +210,7 @@ test('errors preenchido lança, mesmo com HTTP 200', () => {
 
 test('errors como array vazio é sucesso, não erro', () => {
   // Controle positivo: o arquivo real traz errors: [] em resposta boa.
-  assert.deepEqual(primeiroTempo && envelopeVazio.errors, []);
+  assert.deepEqual(envelopeVazio.errors, [], 'premissa do arquivo');
   assert.doesNotThrow(() => toFixtures(envelopeVazio));
 });
 
@@ -229,10 +229,15 @@ test('partida individual malformada é descartada sem derrubar as demais', () =>
   assert.deepEqual(fixtures.map((f) => f.id), ['1611381', String(segundoTempoSaturado.fixture.id)]);
 });
 
-test('partida sem id é descartada', () => {
+test('partida sem id é descartada e a irmã boa sobrevive', () => {
+  // A irmã boa é o controle positivo: sem ela o teste seria negativo puro e
+  // nao provaria que o descarte e cirurgico. Sozinha, a partida ruim agora
+  // dispara o guard de "nenhuma utilizavel", que e outro teste.
   const semId = structuredClone(primeiroTempo);
   semId.fixture.id = null;
-  assert.deepEqual(toFixtures(envelope([semId])), []);
+
+  const fixtures = toFixtures(envelope([semId, segundoTempo]));
+  assert.deepEqual(fixtures.map((f) => f.id), [String(segundoTempo.fixture.id)]);
 });
 
 // --- pureza -----------------------------------------------------------------
@@ -249,4 +254,146 @@ test('o resultado não compartilha referência com o payload cru', () => {
   const [f] = toFixtures(entrada);
   f.homeName = 'MUTADO';
   assert.equal(entrada.response[0].teams.home.name, 'JS El Biar');
+});
+
+// --- achados da revisão -----------------------------------------------------
+
+test('C1: resposta com partidas onde nenhuma é utilizável lança', () => {
+  // O JSDoc do adaptador declara inaceitável devolver [] e fazer o Worker
+  // gravar snapshot vazio por cima de um bom. O guard de envelope cobria só
+  // uma forma disso; esta é a outra, e é a silenciosa.
+  const semTimes = structuredClone(segundoTempo);
+  delete semTimes.teams;
+
+  assert.throws(() => toFixtures(envelope([semTimes, semTimes])), /nenhuma utilizável/i);
+});
+
+test('C1: resposta legitimamente sem partidas continua devolvendo lista vazia', () => {
+  // Controle positivo: sem jogo ao vivo no mundo, [] é a resposta certa e
+  // não pode lançar.
+  assert.deepEqual(toFixtures(envelopeVazio), []);
+});
+
+test('A6: chave da cadeia de protótipos não vira status', () => {
+  // STATUS_MAP é literal congelado, não objeto de protótipo nulo:
+  // STATUS_MAP['constructor'] devolve a função Object, que é truthy e
+  // escaparia para Fixture.status, fora dos cinco valores do contrato.
+  const validos = new Set(['scheduled', 'live', 'halftime', 'finished', 'cancelled']);
+  for (const chave of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    const cru = structuredClone(primeiroTempo);
+    cru.fixture.status.short = chave;
+    const [f] = toFixtures(envelope([cru]));
+    assert.ok(validos.has(f.status), `${chave} produziu status inválido: ${String(f.status)}`);
+    assert.equal(f.status, 'scheduled');
+  }
+});
+
+test('A5: nome de time vazio descarta a partida', () => {
+  // '' é string e passava o guard de tipo, produzindo card em branco na tela.
+  for (const lado of ['home', 'away']) {
+    const cru = structuredClone(primeiroTempo);
+    cru.teams[lado].name = '';
+    assert.deepEqual(toFixtures(envelope([cru, segundoTempo])).map((f) => f.id), [
+      String(segundoTempo.fixture.id),
+    ], `nome vazio em ${lado} não descartou`);
+  }
+});
+
+test('A4: partida sem liga é descartada, não entra com leagueId vazio', () => {
+  // leagueId '' nunca casa com activeLeagueIds: a partida entraria no
+  // snapshot e sumiria da grade filtrada, em silêncio.
+  const semLiga = structuredClone(primeiroTempo);
+  delete semLiga.league;
+  assert.deepEqual(toFixtures(envelope([semLiga, segundoTempo])).map((f) => f.id), [
+    String(segundoTempo.fixture.id),
+  ]);
+
+  const semLeagueId = structuredClone(primeiroTempo);
+  semLeagueId.league.id = null;
+  assert.deepEqual(toFixtures(envelope([semLeagueId, segundoTempo])).map((f) => f.id), [
+    String(segundoTempo.fixture.id),
+  ]);
+});
+
+test('A4: campos só de exibição degradam para vazio em vez de descartar', () => {
+  // leagueName e kickoffISO não participam de diff nem de filtro: perdê-los
+  // piora a tela, não a correção. Descartar a partida por causa deles seria
+  // desproporcional.
+  const cru = structuredClone(primeiroTempo);
+  delete cru.league.name;
+  delete cru.fixture.date;
+
+  const [f] = toFixtures(envelope([cru]));
+  assert.equal(f.leagueName, '');
+  assert.equal(f.kickoffISO, '');
+  assert.equal(f.leagueId, '186', 'o que importa para o filtro sobreviveu');
+});
+
+test('A3: envelope truncado lança em vez de entregar meia verdade', () => {
+  // Se paging.total > 1 ou results discordar de response.length, faltam
+  // partidas. Entregar a página 1 em silêncio faria um favorito sumir e
+  // reaparecer conforme a contagem global oscila — e para o diff, partida que
+  // some e volta é partida sem linha de base: o gol não sai.
+  assert.throws(
+    () => toFixtures({ ...envelope([primeiroTempo]), paging: { current: 1, total: 3 } }),
+    /trunc/i,
+  );
+  assert.throws(
+    () => toFixtures({ ...envelope([primeiroTempo]), results: 250 }),
+    /trunc/i,
+  );
+});
+
+test('A3: envelope íntegro da captura real não lança', () => {
+  // Controle positivo: paging {current:1,total:1} e results === length é o
+  // que a captura traz, e tem que passar.
+  assert.doesNotThrow(() => toFixtures(envelope([primeiroTempo, segundoTempo])));
+});
+
+test('S5: id não escalar é descartado, não vira "[object Object]"', () => {
+  // Dois ids objeto colidiriam na mesma chave de diff.
+  const cru = structuredClone(primeiroTempo);
+  cru.fixture.id = { a: 1 };
+  assert.deepEqual(toFixtures(envelope([cru, segundoTempo])).map((f) => f.id), [
+    String(segundoTempo.fixture.id),
+  ]);
+});
+
+test('S5: placar negativo ou fracionário entra como null', () => {
+  for (const invalido of [-1, 2.5, Number.NaN, '3']) {
+    const cru = structuredClone(primeiroTempo);
+    cru.goals.home = invalido;
+    const [f] = toFixtures(envelope([cru]));
+    assert.equal(f.homeGoals, null, `${String(invalido)} deveria virar null`);
+  }
+});
+
+test('S2: todo status.short das amostras versionadas está no mapa', () => {
+  // Derivado da evidência, não de literal escrito à mão: acrescentar uma
+  // amostra nova ao helper faz este teste crescer sozinho.
+  const amostras = [primeiroTempo, primeiroTempoAcrescimo, segundoTempo, segundoTempoSaturado];
+  for (const amostra of amostras) {
+    const short = amostra.fixture.status.short;
+    assert.ok(Object.hasOwn(STATUS_MAP, short), `${short} está na captura e não no mapa`);
+  }
+});
+
+test('S1: o mapa não tem chave a mais nem a menos que o conjunto documentado', () => {
+  // A versão anterior só checava uma direção: uma chave inventada passaria.
+  const documentados = [
+    'TBD', 'NS', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT',
+    'FT', 'AET', 'PEN', 'PST', 'CANC', 'ABD', 'AWD', 'WO', 'LIVE',
+  ];
+  assert.deepEqual(Object.keys(STATUS_MAP).sort(), [...documentados].sort());
+});
+
+test('S1: nenhum código de partida encerrada ou cancelada mapeia para live', () => {
+  // Afirmação sobre o domínio, e não sobre o literal: é isto que impede um
+  // alerta de gol numa partida que já acabou.
+  for (const short of ['FT', 'AET', 'PEN', 'PST', 'CANC', 'ABD', 'AWD', 'WO']) {
+    assert.notEqual(STATUS_MAP[short], 'live', `${short} não pode ser live`);
+  }
+  for (const short of ['1H', '2H', 'ET', 'P']) {
+    assert.equal(STATUS_MAP[short], 'live', `${short} tem que ser live`);
+  }
 });
