@@ -45,9 +45,14 @@ upstream: o cron busca, grava no KV, o navegador lê o KV.
 Quando o README ou qualquer doc visível ao usuário falar de latência ou cobertura, use estes — eles
 foram medidos e negociados, não estimados:
 
-- **Latência do alerta de gol: 0–210s**, média em torno de 75s. É até 150s de intervalo upstream
-  mais até 60s de consistência eventual do KV. **Nunca prometa menos.** Se um doc disser 0–150s,
-  está desatualizado: corrija.
+- **Latência do alerta de gol: 0–210s — e escreva "não medida" junto.** É até 150s de intervalo
+  upstream (nosso, verificável no código) mais até 60s de consistência eventual do KV (da
+  documentação do Cloudflare, **nunca exercitada aqui** — os testes usam um KV falso que não
+  reproduz propagação). É o pior caso plausível, não um resultado.
+  **Nunca prometa menos, e nunca apresente como medido.** A marca só cai quando alguém medir
+  contra o KV real. Se um doc disser 0–150s, está desatualizado: corrija.
+  A média de ~75s que circulou em conversa é estimativa e **não deve aparecer em documento
+  nenhum** — é exatamente o tipo de número que vira fato por repetição.
 - **Cobertura ao vivo: 3–4h/dia**, com reserva de 10 requisições/dia para a agenda.
 - **Reset da cota: 21:00 BRT.**
 - A agenda de fallback (football-data.org) cobre só 12 competições e com placar atrasado.

@@ -87,11 +87,20 @@ e é lá que uma revisão ganha o que o diff sozinho não dá.
 
 `src/core/` importando de `src/adapters/` é erro bloqueante.
 
-**`src/adapters/apiFootball.js` é stub de propósito** e lança `not implemented: awaiting real API
-shape`. O shape real de `GET /fixtures?live=all` ainda não foi observado contra a API — só contra a
-documentação, que não é evidência. **Não invente o mapeamento.** Quando o `live-sample.json` chegar,
-**só esse arquivo muda**: é para isso que a fronteira existe, e se o adaptador real exigir mudanças
-no núcleo, a fronteira falhou e isso é assunto para o dev, não algo a contornar.
+**`src/adapters/apiFootball.js` está implementado contra o payload REAL** de
+`GET /fixtures?live=all` (captura de 2026-09-03, 19 partidas). A fronteira funcionou: nada em
+`src/core/` mudou quando ele saiu do stub. Recortes verbatim da captura vivem em
+`test/helpers/apiFootballSamples.js`, porque o arquivo de 58 KB não é versionado.
+
+**O que continua NÃO observado:** o shape de `GET /fixtures?date=YYYY-MM-DD`, que é o que alimenta
+a agenda e, por ela, o portão do cron. **Não invente esse mapeamento** — a mesma regra que valeu
+para o `live=all` vale aqui, e é por isso que o cron opera em fail-open enquanto a chave `agenda`
+do KV estiver vazia. Quando a captura chegar, só o adaptador muda; se exigir mudança no núcleo, a
+fronteira falhou e isso é assunto para o dev, não algo a contornar.
+
+No `STATUS_MAP`, só `1H` e `2H` foram verificados contra captura real; os outros 17 são inferência
+da documentação e estão marcados como tal no arquivo. Não os promova a medidos sem uma captura que
+os contenha.
 
 ## Consumo do núcleo: só `applySnapshot`
 
@@ -135,11 +144,17 @@ BRT**. Não é por cliente: é a chave inteira.
 
 ## Números honestos
 
-Estes vão no README e em qualquer texto visível ao usuário. Foram medidos e negociados, não
-estimados. **Nunca prometa melhor.**
+Estes vão no README e em qualquer texto visível ao usuário. **Nunca prometa melhor** — e diga
+quais são medidos e quais não são, porque a diferença importa.
 
-- **Latência do alerta de gol: 0–210s.** Até 150s de intervalo upstream mais até 60s de
-  consistência eventual do KV. Se algum documento ainda disser 0–150s, está desatualizado: corrija.
+- **Latência do alerta de gol: 0–210s — NÃO MEDIDA.** A parcela de até 150s é o intervalo upstream,
+  que é nosso e verificável no código. A parcela de até 60s é a consistência eventual do KV, que
+  vem da documentação do Cloudflare e **nunca foi exercitada aqui**: os testes do Worker usam um
+  KV falso, um `Map` síncrono, que não reproduz propagação, latência nem `put` concorrente. O
+  número é o pior caso plausível, não um resultado.
+  Documente-o **marcado como não medido**, pela mesma regra que se aplicou ao `status.elapsed` do
+  adaptador. Só perde a marca quando alguém medir contra o KV de verdade.
+  Se algum documento ainda disser 0–150s, está desatualizado: corrija.
 - **Cobertura ao vivo: 3–4h/dia**, com a reserva de 10 requisições preservada.
 - **Reset da cota: 21:00 BRT.**
 - A agenda de fallback (football-data.org) cobre só 12 competições, e com placar atrasado.
