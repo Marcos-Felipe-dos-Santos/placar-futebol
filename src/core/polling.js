@@ -21,7 +21,7 @@ const HOUR_MS = 60 * 60 * 1000;
 export const ACTIVE_INTERVAL_MS = 120_000;
 
 /**
- * Piso absoluto, aplicado por último e imune às opções.
+ * Piso absoluto, que não deriva de `options`.
  *
  * O ritmo normal já é limitado por `ACTIVE_INTERVAL_MS`, mas aquele piso vem
  * de `options.activeMs` e some se o chamador sobrescrever a opção. Este aqui
@@ -56,6 +56,16 @@ export const LIVE_WINDOW_MS = 3 * HOUR_MS;
 export const AGENDA_RESERVE = 10;
 
 /**
+ * Folga somada ao agendamento pós-reset.
+ *
+ * Bater no milissegundo exato do reset aposta que o relógio do Worker e o da
+ * API-Football concordam. Se a API estiver alguns segundos atrás, a
+ * requisição cai na janela pré-reset e volta 429 — e a próxima leitura de
+ * cota viria de uma resposta de erro.
+ */
+export const RESET_MARGIN_MS = 30_000;
+
+/**
  * @param {unknown} value
  * @returns {number} O número, ou 0 se não for finito.
  */
@@ -70,6 +80,13 @@ function finiteOrZero(value) {
  * @param {number} input.quotaRemaining
  *   Requisições restantes na cota diária, lidas do header
  *   `x-ratelimit-requests-remaining` da última resposta upstream.
+ *
+ *   OBRIGAÇÃO DO PR 2: headers HTTP são strings. `'80'` não é `80` — cai no
+ *   saneamento como zero, a cota parece esgotada e o poll ao vivo silencia
+ *   até o reset, potencialmente por 24h. A direção da falha é segura (nunca
+ *   gasta demais), mas o produto morre calado. O Worker é obrigado a fazer
+ *   `Number(header)` e a tratar header ausente ou não numérico
+ *   explicitamente, em vez de repassar o que veio.
  * @param {number} input.msUntilReset  Tempo até o reset da cota (00:00 UTC).
  * @param {boolean} input.hasLiveFavorite
  *   PREMISSA DE PORTÃO, NÃO MODIFICADOR DE RITMO.
@@ -104,9 +121,10 @@ export function computePollInterval(input, options = {}) {
   const msUntilReset = Math.max(0, finiteOrZero(input?.msUntilReset));
   const usableQuota = Math.floor(quotaRemaining - reserve);
 
-  // Reserva da agenda intocável: nada de poll ao vivo até o reset.
+  // Reserva da agenda intocável: nada de poll ao vivo até o reset, e com
+  // folga para não disputar o milissegundo do reset com o relógio da API.
   if (usableQuota <= 0) {
-    return Math.max(msUntilReset, activeMs, MIN_INTERVAL_MS);
+    return Math.max(msUntilReset + RESET_MARGIN_MS, activeMs, MIN_INTERVAL_MS);
   }
 
   const desiredMs = input?.hasLiveFavorite ? activeMs : idleMs;

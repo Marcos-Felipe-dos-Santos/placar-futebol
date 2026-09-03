@@ -86,13 +86,15 @@ test('o piso absoluto sobrevive a opções que tentariam furá-lo', () => {
 });
 
 test('o piso absoluto vale também quando a cota utilizável acabou', () => {
-  // activeMs baixo de propósito: sem o piso duro, o ramo de cota esgotada
-  // devolveria os 5s de msUntilReset e o cron voltaria a bater em seguida.
+  // `msUntilReset: 0` e `activeMs` baixo de propósito: é a única combinação
+  // em que a margem pós-reset não mascara a ausência do piso duro. A régua
+  // tem que ficar acima de RESET_MARGIN_MS, senão a margem sozinha satisfaz
+  // o teste e o piso pode ser removido com a suíte verde.
   const ms = computePollInterval(
-    { quotaRemaining: 0, msUntilReset: 5_000, hasLiveFavorite: true },
+    { quotaRemaining: 0, msUntilReset: 0, hasLiveFavorite: true },
     { activeMs: 1_000 },
   );
-  assert.ok(ms >= PISO_MINIMO_DEFENSAVEL_MS, `veio ${ms}ms`);
+  assert.ok(ms >= 50_000, `veio ${ms}ms, abaixo do piso absoluto`);
 });
 
 test('o piso absoluto é um número defensável, não um placebo', () => {
@@ -162,6 +164,36 @@ test('regra 6: a cota utilizável cobre a janela de cobertura ao vivo prometida'
     cobertura >= 3 * HOUR,
     `no ritmo de ${ms}ms a cota cobre só ${(cobertura / HOUR).toFixed(1)}h ao vivo; o README promete 3–4h`,
   );
+  // O teto é o que dá discriminação ao teste. Só com piso, um intervalo MAIOR
+  // aumenta a "cobertura" e passa mais folgado — a diluição literal até o
+  // reset daria 8min de intervalo, 12h de "cobertura", e passaria.
+  assert.ok(
+    cobertura <= 4.5 * HOUR,
+    `${(cobertura / HOUR).toFixed(1)}h de cobertura significa intervalo de ${(ms / 60_000).toFixed(1)}min; o README promete 3–4h, não uma média diluída`,
+  );
+});
+
+test('quotaRemaining como string de header silencia o poll — comportamento fixado', () => {
+  // Headers HTTP são strings. `'80'` não é 80: cai no saneamento como zero, a
+  // cota parece esgotada e o poll ao vivo cala até o reset. A direção é
+  // segura, mas o produto morre calado — este teste existe para que a
+  // obrigação do PR 2 (fazer Number(header)) não seja descoberta em produção.
+  const msUntilReset = 8 * HOUR;
+  const ms = computePollInterval({ quotaRemaining: '80', msUntilReset, hasLiveFavorite: true });
+  assert.ok(
+    ms >= msUntilReset,
+    `header string produziu intervalo de ${(ms / 60_000).toFixed(1)}min em vez de silenciar até o reset`,
+  );
+});
+
+test('o agendamento pós-reset tem folga para não disputar o milissegundo do reset', () => {
+  const msUntilReset = 3 * HOUR;
+  const ms = computePollInterval({ quotaRemaining: 0, msUntilReset, hasLiveFavorite: true });
+  assert.ok(
+    ms > msUntilReset,
+    'bater no instante exato do reset aposta que o relógio do Worker e o da API concordam; se a API estiver atrás, volta 429',
+  );
+  assert.ok(ms >= msUntilReset + 30_000, `folga de apenas ${ms - msUntilReset}ms`);
 });
 
 test('regra 6 reinterpretada: jogo logo depois do reset não é diluído pelas 24h', () => {

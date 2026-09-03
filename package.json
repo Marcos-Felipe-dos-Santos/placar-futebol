@@ -5,6 +5,6 @@
   "type": "module",
   "description": "Placar de futebol ao vivo — estático, sem build, sem dependências",
   "scripts": {
-    "test": "node --test "test/*.test.js""
+    "test": "node --test \"test/*.test.js\""
   }
 }

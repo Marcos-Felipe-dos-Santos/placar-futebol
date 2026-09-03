@@ -23,6 +23,33 @@ export const RESYNC_GAP_MS = 10 * 60 * 1000;
 const UNTRUSTED_STATUS = new Set(['cancelled']);
 
 /**
+ * Escolhe qual snapshot o chamador deve guardar como estado.
+ *
+ * OBRIGATÓRIO no caminho de leitura do cliente. Bloquear o gap negativo
+ * dentro de `diffFixtures` impede que a leitura atrasada gere evento, mas não
+ * impede o chamador de GUARDAR a leitura atrasada — e aí a linha de base
+ * regride e o gol é redescoberto no poll seguinte, tocando som para um gol
+ * que já estava na tela. O KV tem até 60s de consistência eventual, então
+ * receber uma réplica atrasada é condição de projeto.
+ *
+ * Existe como função em vez de comentário porque "a UI precisa lembrar de
+ * comparar timestamps" é exatamente como esse bug chega em produção.
+ *
+ * @param {import('./types.js').Snapshot|null|undefined} prevSnapshot
+ * @param {import('./types.js').Snapshot} nextSnapshot
+ * @returns {import('./types.js').Snapshot} O mais recente dos dois.
+ */
+export function keepLatestSnapshot(prevSnapshot, nextSnapshot) {
+  const prevAt = prevSnapshot?.fetchedAtMs;
+  const nextAt = nextSnapshot?.fetchedAtMs;
+
+  if (!Number.isFinite(nextAt)) return prevSnapshot ?? nextSnapshot;
+  if (!prevSnapshot || !Number.isFinite(prevAt)) return nextSnapshot;
+
+  return nextAt >= prevAt ? nextSnapshot : prevSnapshot;
+}
+
+/**
  * Um placar só é comparável quando os dois lados são números finitos.
  * `null` significa "desconhecido", nunca zero — é o que impede que o
  * `null → 0` do apito inicial vire um gol fantasma.
@@ -54,10 +81,15 @@ export function diffFixtures(prevSnapshot, nextSnapshot, options = {}) {
   const prevFixtures = prevSnapshot?.fixtures;
   const nextFixtures = nextSnapshot?.fixtures;
   if (!Array.isArray(prevFixtures) || !Array.isArray(nextFixtures)) return [];
-  if (prevFixtures.length === 0 || nextFixtures.length === 0) return [];
 
+  // Gap negativo significa par fora de ordem: o snapshot "novo" é mais antigo
+  // que o anterior. Não é anomalia, é condição de projeto — o KV tem até 60s
+  // de consistência eventual, então ler uma réplica atrasada depois de já ter
+  // lido a nova acontece. Sem esta guarda o placar regride em silêncio e o
+  // gol é "redescoberto" no poll seguinte, tocando som para um gol que já
+  // estava na tela. Par fora de ordem é ressincronização como outra qualquer.
   const gapMs = nextSnapshot.fetchedAtMs - prevSnapshot.fetchedAtMs;
-  if (!Number.isFinite(gapMs) || gapMs > resyncGapMs) return [];
+  if (!Number.isFinite(gapMs) || gapMs < 0 || gapMs > resyncGapMs) return [];
 
   const previousById = new Map(prevFixtures.map((fixture) => [fixture.id, fixture]));
 
@@ -70,7 +102,11 @@ export function diffFixtures(prevSnapshot, nextSnapshot, options = {}) {
     const before = previousById.get(fixture.id);
     if (before === undefined) continue;
 
-    if (UNTRUSTED_STATUS.has(fixture.status)) continue;
+    // Nos DOIS estados. Se o placar de jogo cancelado é lixo, ele também não
+    // serve de linha de base: provedores marcam "abandonado" e revertem para
+    // live com alguma frequência, e um `cancelled` 1-0 virando `live` 2-0
+    // produziria um gol que ninguém marcou.
+    if (UNTRUSTED_STATUS.has(fixture.status) || UNTRUSTED_STATUS.has(before.status)) continue;
 
     for (const side of /** @type {const} */ (['home', 'away'])) {
       const field = side === 'home' ? 'homeGoals' : 'awayGoals';

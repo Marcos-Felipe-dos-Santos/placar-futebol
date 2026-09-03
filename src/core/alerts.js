@@ -13,8 +13,14 @@
  *
  * Precisa cobrir uma partida inteira com folga: se expirasse antes do fim do
  * jogo, uma correção do provedor (2 → 1 → 2) poderia realertar o mesmo gol.
- * Também não pode ser infinito, senão o registro cresce sem limite no
- * localStorage.
+ * Cobre prorrogação, pênaltis e atraso de provedor sem risco de supressão
+ * indevida, porque a chave inclui o placar resultante e dois gols distintos
+ * nunca colidem.
+ *
+ * ATENÇÃO: este TTL só faz `shouldAlert` IGNORAR entrada velha — ele não
+ * remove nada. Não existe poda aqui, então o registro cresce monotonamente.
+ * Quem persistir isso (PR 5, localStorage) precisa podar; o lugar certo para
+ * a poda é este módulo, como função pura, quando houver um consumidor.
  */
 export const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
 

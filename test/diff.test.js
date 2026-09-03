@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { diffFixtures, RESYNC_GAP_MS } from '../src/core/diff.js';
+import { diffFixtures, keepLatestSnapshot, RESYNC_GAP_MS } from '../src/core/diff.js';
+import { WARN_MAX_MS } from '../src/core/staleness.js';
 import { makeFixture, makeSnapshot, evolve } from './helpers/fixtures.js';
 
 const T0 = 1_700_000_000_000;
@@ -21,8 +22,61 @@ test('regra 1: primeiro snapshot nunca gera evento — estado anterior ausente',
 });
 
 test('regra 1: estado anterior vazio não gera evento mesmo com placar alto', () => {
+  // Controle positivo: a MESMA partida, com o MESMO placar, gera evento
+  // quando existe linha de base. Sem isso o caso negativo passaria só porque
+  // o id não bate — verde sem testar a regra 1.
   const f = makeFixture({ homeGoals: 4, awayGoals: 1 });
   assert.deepEqual(diffFixtures(makeSnapshot(T0, []), makeSnapshot(T1, [f])), []);
+
+  const comLinhaDeBase = diffFixtures(
+    makeSnapshot(T0, [evolve(f, { homeGoals: 3 })]),
+    makeSnapshot(T1, [f]),
+  );
+  assert.equal(comLinhaDeBase.length, 1, 'o caso negativo acima falha pelo motivo certo');
+});
+
+test('regra 4: par fora de ordem (réplica atrasada do KV) atualiza em silêncio', () => {
+  // O KV tem até 60s de consistência eventual: ler uma réplica atrasada
+  // depois de já ter lido a nova é condição de projeto. Se o gap negativo
+  // passasse, o placar regrediria em silêncio e o gol seria "redescoberto"
+  // no poll seguinte — som para um gol que já estava na tela.
+  // O par tem que ser um AUMENTO de placar na leitura atrasada, senão o
+  // teste passaria pela regra 2 (queda é silenciosa) e não provaria nada
+  // sobre o gap. Cenário real: o provedor publicou 1-0 por erro, corrigiu
+  // para 0-0, o cliente leu a réplica corrigida e depois uma réplica
+  // atrasada que ainda mostrava o 1-0.
+  const corrigido = makeFixture({ id: 'a', homeGoals: 0 });
+  const erroAntigo = evolve(corrigido, { homeGoals: 1 });
+
+  const replicaAtrasada = diffFixtures(
+    makeSnapshot(T0, [corrigido]),
+    makeSnapshot(T0 - 40_000, [erroAntigo]),
+  );
+  assert.deepEqual(
+    replicaAtrasada,
+    [],
+    'gap negativo não pode ser tratado como intervalo válido: alertaria um gol que nunca existiu',
+  );
+
+  // Controle: o MESMO par de placares com o gap na ordem certa alerta.
+  // É isso que prova que o caso acima é silenciado pelo gap, e não por acaso.
+  assert.equal(
+    diffFixtures(
+      makeSnapshot(T0, [corrigido]),
+      makeSnapshot(T0 + 40_000, [erroAntigo]),
+    ).length,
+    1,
+  );
+});
+
+test('regra 4: ressincronizar em silêncio só é aceitável com a UI já vermelha', () => {
+  // Invariante cruzada entre módulos: se RESYNC_GAP_MS caísse abaixo de
+  // WARN_MAX_MS, existiriam dados pintados de amarelo ("atrasado, mas ok")
+  // enquanto gols são descartados sem rastro.
+  assert.ok(
+    RESYNC_GAP_MS > WARN_MAX_MS,
+    `RESYNC_GAP_MS=${RESYNC_GAP_MS} não supera WARN_MAX_MS=${WARN_MAX_MS}`,
+  );
 });
 
 test('regra 1: partida vista pela primeira vez não gera evento, mesmo ao lado de uma já conhecida', () => {
@@ -152,6 +206,22 @@ test('regra 5: partida cancelada nunca gera gol, mesmo com placar subindo', () =
   );
 });
 
+test('regra 5: placar de partida cancelada também não serve de linha de base', () => {
+  // Provedores marcam "abandonado" e revertem para live com alguma
+  // frequência. Se o placar do cancelado é lixo, ele não serve de base para
+  // delta nenhum — senão o cancelado 1-0 virando live 2-0 produz um gol que
+  // ninguém marcou.
+  const cancelada = makeFixture({ id: 'a', status: 'cancelled', homeGoals: 1 });
+  assert.deepEqual(
+    diffOne(cancelada, evolve(cancelada, { status: 'live', homeGoals: 2 })),
+    [],
+  );
+
+  // Controle: a mesma transição partindo de um estado confiável alerta.
+  const live = makeFixture({ id: 'a', status: 'live', homeGoals: 1 });
+  assert.equal(diffOne(live, evolve(live, { homeGoals: 2 })).length, 1);
+});
+
 test('regra 5: prorrogação é live e continua alertando', () => {
   const antes = makeFixture({ homeGoals: 1, status: 'live', elapsedMin: 90 });
   const eventos = diffOne(antes, evolve(antes, { homeGoals: 2, elapsedMin: 105 }));
@@ -211,6 +281,42 @@ test('o pareamento entre snapshots é por id, não por posição', () => {
   );
 });
 
+test('keepLatestSnapshot recusa avançar o estado para uma leitura atrasada', () => {
+  const novo = makeSnapshot(T0, [makeFixture({ id: 'a', homeGoals: 1 })]);
+  const atrasado = makeSnapshot(T0 - 40_000, [makeFixture({ id: 'a', homeGoals: 0 })]);
+
+  assert.equal(keepLatestSnapshot(novo, atrasado), novo, 'a réplica atrasada é descartada');
+  assert.equal(keepLatestSnapshot(atrasado, novo), novo, 'a réplica nova substitui a atrasada');
+});
+
+test('keepLatestSnapshot aceita releitura com o mesmo timestamp', () => {
+  // O cliente polla mais rápido que o cron: reler o mesmo snapshot é o caso
+  // comum, e tem que avançar para o objeto novo sem drama.
+  const a = makeSnapshot(T0, [makeFixture({ id: 'a' })]);
+  const b = makeSnapshot(T0, [makeFixture({ id: 'a' })]);
+  assert.equal(keepLatestSnapshot(a, b), b);
+});
+
+test('keepLatestSnapshot lida com estado inicial e timestamp inválido', () => {
+  const bom = makeSnapshot(T0, [makeFixture({ id: 'a' })]);
+  const ruim = makeSnapshot(Number.NaN, [makeFixture({ id: 'a' })]);
+
+  assert.equal(keepLatestSnapshot(null, bom), bom, 'primeira leitura é aceita');
+  assert.equal(keepLatestSnapshot(undefined, bom), bom);
+  assert.equal(keepLatestSnapshot(bom, ruim), bom, 'timestamp inválido não substitui estado bom');
+  assert.equal(keepLatestSnapshot(null, ruim), ruim, 'sem alternativa, resta a leitura ruim');
+});
+
+test('keepLatestSnapshot não muta nem clona: devolve uma das duas referências', () => {
+  const a = makeSnapshot(T0, [makeFixture({ id: 'a' })]);
+  const b = makeSnapshot(T0 + 1, [makeFixture({ id: 'a' })]);
+  const copiaA = structuredClone(a);
+  const escolhido = keepLatestSnapshot(a, b);
+
+  assert.ok(escolhido === a || escolhido === b);
+  assert.deepEqual(a, copiaA);
+});
+
 test('diffFixtures é puro: não muta os snapshots recebidos', () => {
   const antes = makeFixture({ homeGoals: 0 });
   const depois = evolve(antes, { homeGoals: 1 });
@@ -226,6 +332,13 @@ test('diffFixtures é puro: não muta os snapshots recebidos', () => {
 });
 
 test('snapshot novo vazio não gera evento nem quebra', () => {
+  // Controle positivo pelo mesmo motivo do teste de estado anterior vazio:
+  // sem ele, este passaria porque não há nada para iterar, e não porque a
+  // ausência da partida foi tratada.
   const f = makeFixture({ homeGoals: 1 });
   assert.deepEqual(diffFixtures(makeSnapshot(T0, [f]), makeSnapshot(T1, [])), []);
+  assert.equal(
+    diffFixtures(makeSnapshot(T0, [evolve(f, { homeGoals: 0 })]), makeSnapshot(T1, [f])).length,
+    1,
+  );
 });
