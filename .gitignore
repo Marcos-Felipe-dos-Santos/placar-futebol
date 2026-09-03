@@ -15,6 +15,7 @@ settings.local.json.bak
 # Amostras de resposta da API (podem conter dados de conta / volume grande)
 live-sample.json
 leagues-sample.json
+live-pico.json
 
 # Dependências (o projeto não usa build, mas ferramentas locais podem criar)
 node_modules/

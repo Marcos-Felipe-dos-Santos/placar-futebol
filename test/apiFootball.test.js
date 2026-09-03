@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFixtures, STATUS_MAP } from '../src/adapters/apiFootball.js';
+import { toFixtures, toFixturesWithReport, STATUS_MAP } from '../src/adapters/apiFootball.js';
 import {
   primeiroTempo,
   primeiroTempoAcrescimo,
@@ -396,4 +396,74 @@ test('S1: nenhum código de partida encerrada ou cancelada mapeia para live', ()
   for (const short of ['1H', '2H', 'ET', 'P']) {
     assert.equal(STATUS_MAP[short], 'live', `${short} tem que ser live`);
   }
+});
+
+// --- relatório --------------------------------------------------------------
+
+test('relatório: resposta limpa não descarta nada', () => {
+  const r = toFixturesWithReport(envelope([primeiroTempo, segundoTempo]));
+  assert.equal(r.fixtures.length, 2);
+  assert.equal(r.discarded, 0);
+  assert.equal(r.truncated, false);
+});
+
+test('relatório: conta quantas partidas caíram, não só que caíram', () => {
+  // "3 de 19 sumiram porque uma liga mudou um campo" tem que virar sinal
+  // visível na UI, e uma delas pode ser a favorita.
+  const semTimes = structuredClone(primeiroTempo);
+  delete semTimes.teams;
+  const semLiga = structuredClone(primeiroTempoAcrescimo);
+  delete semLiga.league;
+
+  const r = toFixturesWithReport(envelope([semTimes, segundoTempo, semLiga, segundoTempoSaturado]));
+  assert.equal(r.fixtures.length, 2);
+  assert.equal(r.discarded, 2);
+});
+
+test('relatório: descarte parcial não lança — quem decide é o chamador', () => {
+  const semTimes = structuredClone(primeiroTempo);
+  delete semTimes.teams;
+  assert.doesNotThrow(() => toFixturesWithReport(envelope([semTimes, segundoTempo])));
+});
+
+test('relatório: nenhuma utilizável continua lançando', () => {
+  const semTimes = structuredClone(primeiroTempo);
+  delete semTimes.teams;
+  assert.throws(() => toFixturesWithReport(envelope([semTimes])), /nenhuma utilizável/i);
+});
+
+test('relatório: envelope inválido lança igual à versão simples', () => {
+  assert.throws(() => toFixturesWithReport({ ...envelopeVazio, errors: { token: 'x' } }), /api-football/i);
+  assert.throws(() => toFixturesWithReport(null), /api-football/i);
+});
+
+test('toFixtures é wrapper fino: mesma lista que o relatório', () => {
+  const entrada = envelope([primeiroTempo, segundoTempo, segundoTempoSaturado]);
+  assert.deepEqual(toFixtures(entrada), toFixturesWithReport(entrada).fixtures);
+});
+
+test('toFixtures descarta o relatório mas não muda o comportamento de descarte', () => {
+  const semTimes = structuredClone(primeiroTempo);
+  delete semTimes.teams;
+  const entrada = envelope([semTimes, segundoTempo]);
+
+  assert.equal(toFixtures(entrada).length, 1);
+  assert.equal(toFixturesWithReport(entrada).discarded, 1);
+});
+
+test('truncated é campo de costura: hoje inalcançável porque truncamento lança', () => {
+  // Se algum dia truncamento parar de lançar (o gatilho de reversão está no
+  // JSDoc), este teste é o que muda — e a assinatura consumida pelos PR 2 e
+  // PR 3 não muda junto. É essa a razão de o campo existir agora.
+  assert.throws(
+    () => toFixturesWithReport({ ...envelope([primeiroTempo]), paging: { current: 1, total: 3 } }),
+    /trunc/i,
+  );
+  assert.throws(
+    () => toFixturesWithReport({ ...envelope([primeiroTempo]), results: 250 }),
+    /trunc/i,
+  );
+
+  // Controle positivo: envelope íntegro reporta truncated: false.
+  assert.equal(toFixturesWithReport(envelope([primeiroTempo])).truncated, false);
 });

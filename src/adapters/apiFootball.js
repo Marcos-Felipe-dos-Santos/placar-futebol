@@ -238,18 +238,43 @@ function toFixture(raw) {
 }
 
 /**
- * Converte uma resposta crua da API-Football em partidas do modelo interno.
+ * Resultado de uma conversão, com o que se perdeu no caminho.
+ *
+ * @typedef  {object} ToFixturesReport
+ * @property {import('../core/types.js').Fixture[]} fixtures
+ *   Objetos novos, sem referência compartilhada com o payload.
+ * @property {number} discarded
+ *   Quantas partidas da resposta não viraram `Fixture`.
+ *
+ *   REQUISITOS: o Worker do PR 2 consome esta versão, e a UI do PR 3 mostra
+ *   `discarded > 0` como sinal visível — não como log. O motivo é o de sempre
+ *   neste projeto: se 3 de 19 partidas somem porque uma liga mudou um campo,
+ *   ninguém fica sabendo, e uma delas pode ser a favorita. Perder partida em
+ *   silêncio é o modo de falha que este projeto mais rejeita.
+ * @property {boolean} truncated
+ *   Se a resposta declarou ter mais partidas do que entregou.
+ *
+ *   HOJE É SEMPRE `false`, porque truncamento lança antes de chegar aqui. O
+ *   campo existe como **costura para a reversão documentada** abaixo: se a
+ *   decisão de lançar se inverter, muda uma linha neste arquivo e a
+ *   assinatura consumida pelo PR 2 e pelo PR 3 continua a mesma. Sem o campo,
+ *   a reversão viraria mudança de contrato atravessando três PRs.
+ */
+
+/**
+ * Converte uma resposta crua da API-Football em partidas do modelo interno,
+ * com relatório do que se perdeu.
  *
  * @param {unknown} rawResponse  Corpo JSON já parseado de `/fixtures?live=all`.
- * @returns {import('../core/types.js').Fixture[]}
- *   Objetos novos, sem referência compartilhada com o payload.
+ * @returns {ToFixturesReport}
  * @throws {Error}
- *   Se o envelope não for o esperado, ou se `errors` vier preenchido. Lançar
- *   é deliberado: devolver `[]` faria o Worker gravar um snapshot vazio por
- *   cima de um bom, e a página ficaria correta e vazia — indistinguível de
- *   quebrada.
+ *   Se o envelope não for o esperado, se `errors` vier preenchido, se a
+ *   resposta estiver truncada, ou se nenhuma das partidas for utilizável.
+ *   Lançar é deliberado: devolver `[]` faria o Worker gravar um snapshot
+ *   vazio por cima de um bom, e a página ficaria correta e vazia —
+ *   indistinguível de quebrada.
  */
-export function toFixtures(rawResponse) {
+export function toFixturesWithReport(rawResponse) {
   if (rawResponse == null || typeof rawResponse !== 'object' || Array.isArray(rawResponse)) {
     throw new Error('api-football: resposta não é um envelope de objeto');
   }
@@ -275,6 +300,21 @@ export function toFixtures(rawResponse) {
   // meia verdade com cara de verdade inteira. A captura de 2026-09-03 traz
   // `paging: {current:1, total:1}` e `results` igual ao tamanho, então este
   // caminho não dispara com o que já foi observado.
+  //
+  // RISCO ASSUMIDO: 19 resultados com `total: 1` é compatível com qualquer
+  // tamanho de página >= 19. Não dá para concluir da captura que `live=all`
+  // nunca pagina. Se paginar num volume que ainda não observamos, este
+  // adaptador passa a lançar sempre e o produto para de atualizar.
+  //
+  // GATILHO DE REVERSÃO, explícito: **se a medição em horário de pico
+  // (sábado, ~16:00 UTC) mostrar paginação real em `live=all` — `paging.total`
+  // maior que 1 ou `results` maior que `response.length` —, esta decisão se
+  // inverte.** Nesse caso: não lançar, devolver as partidas da página
+  // recebida e marcar `truncated: true` no relatório, deixando o Worker e a
+  // UI tratarem a perda como sinal visível. É por isso que o campo existe.
+  //
+  // Até essa medição, lançar é o certo: perder partida em silêncio é pior que
+  // parar alto, e parar alto preserva o último snapshot bom.
   const total = envelope.paging?.total;
   if (typeof total === 'number' && total > 1) {
     throw new Error(`api-football: resposta truncada, paging.total = ${total}`);
@@ -287,9 +327,11 @@ export function toFixtures(rawResponse) {
 
   /** @type {import('../core/types.js').Fixture[]} */
   const fixtures = [];
+  let discarded = 0;
   for (const raw of envelope.response) {
     const fixture = toFixture(raw);
-    if (fixture !== null) fixtures.push(fixture);
+    if (fixture === null) discarded += 1;
+    else fixtures.push(fixture);
   }
 
   // A outra metade do guard de silêncio. O envelope lança para não fazer o
@@ -305,5 +347,24 @@ export function toFixtures(rawResponse) {
     );
   }
 
-  return fixtures;
+  // `truncated` é sempre false aqui: o guard acima lança antes. Ver o
+  // contrato do typedef para por que o campo existe mesmo assim.
+  return { fixtures, discarded, truncated: false };
+}
+
+
+/**
+ * Versão sem relatório, para quem só quer a lista.
+ *
+ * Wrapper fino: mesma validação, mesmos lançamentos, mesmo descarte. A
+ * diferença é só o que se perde — quantas partidas caíram. Use
+ * `toFixturesWithReport` quando essa contagem puder virar sinal para o
+ * usuário; use esta quando não puder.
+ *
+ * @param {unknown} rawResponse
+ * @returns {import('../core/types.js').Fixture[]}
+ * @throws {Error} Nas mesmas condições de `toFixturesWithReport`.
+ */
+export function toFixtures(rawResponse) {
+  return toFixturesWithReport(rawResponse).fixtures;
 }

@@ -184,3 +184,12 @@ Três regras que este projeto aprendeu na prática e que valem mais que cobertur
    vacuidade — verde sem testar nada.
 3. **Constante nunca é régua para ela mesma.** `assert.ok(ms >= MIN_INTERVAL_MS)` continua verde se
    alguém baixar `MIN_INTERVAL_MS` para 1. Use um literal defensável e explique-o no comentário.
+4. **Teste que itera uma estrutura tem que cobrir o domínio inteiro da invariante.**
+   `Object.entries` não vê a cadeia de protótipos, então um teste que assere "nenhum valor deste
+   mapa está fora do contrato" iterando as chaves próprias é cego para `mapa['constructor']`.
+   Aconteceu aqui.
+5. **Mensagem de assert é promessa, e entra na revisão.** Se o código não impõe a invariante que a
+   mensagem enuncia, a mensagem é mentira documentada. Descreva o caso, ou imponha a lei.
+
+As duas últimas nasceram da revisão do adaptador; a versão longa, com o exemplo real, está em
+`.claude/agents/junior-dev.md`.

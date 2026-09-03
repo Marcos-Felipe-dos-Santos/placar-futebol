@@ -24,6 +24,19 @@ Cloudflare Worker com KV e Cron Trigger. Testes com `node --test`; rode com `npm
    vacuidade e não prova nada — é o modo de falha recorrente deste projeto.
 4. Nunca use constante como régua para ela mesma. `assert.ok(ms >= MIN_INTERVAL_MS)` continua verde
    se alguém baixar `MIN_INTERVAL_MS` para 1. Use um literal defensável e explique-o no comentário.
+5. **Teste que itera uma estrutura tem que enxergar o espaço inteiro que a invariante cobre.**
+   `Object.entries(MAPA)` percorre só chaves próprias e enumeráveis — não vê a cadeia de
+   protótipos. Um teste que assere "nenhum valor deste mapa está fora do contrato" iterando
+   `Object.entries` **estruturalmente não consegue** ver `MAPA['constructor']`, que devolve a
+   função `Object` e é truthy. Aconteceu neste projeto: o teste que existia para fechar o buraco
+   era cego para ele. Antes de escrever o laço, pergunte qual é o domínio da invariante e se o
+   iterador cobre esse domínio; se não cobrir, teste as entradas de fora explicitamente.
+6. **Mensagem de assert enuncia uma invariante. Se o código não a impõe, a mensagem é mentira.**
+   `assert.ok(f.homeName && f.awayName, 'nome de time nunca vazio')` rodando só sobre amostras
+   onde o nome nunca é vazio afirma uma garantia que o adaptador não dava — `''` passava. A
+   mensagem vira documentação e é lida como promessa. **A mensagem é parte do que se revisa:**
+   ao escrever uma, confira se o código realmente a impõe e se algum caso do teste a exercita.
+   Se você só quer descrever o caso, descreva o caso, não a lei.
 5. Implemente o mínimo necessário pra esse PR. Nada de escopo extra.
 6. **Pureza do núcleo:** `src/core/` não tem `Math.random()`, `Date.now()`, `fetch`, `localStorage`
    nem `setTimeout`. Tempo e estado entram por parâmetro.
