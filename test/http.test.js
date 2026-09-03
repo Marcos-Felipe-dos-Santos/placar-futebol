@@ -113,7 +113,9 @@ test('o estado não cresce sem limite: entradas velhas são podadas', () => {
   // Muito depois, um IP novo: os 50 antigos não podem continuar ocupando
   // memória do isolate para sempre.
   checkRateLimit(estado, '10.0.1.1', T0 + RATE_LIMIT_WINDOW_MS * 10, {});
-  assert.ok(estado.size < 51, `estado ficou com ${estado.size} entradas`);
+  // `< 51` passaria com os 50 antigos ainda lá: bastaria a poda remover um. A
+  // mensagem prometia que nenhum sobrevive, então o assert tem que exigir isso.
+  assert.equal(estado.size, 1, `estado ficou com ${estado.size} entradas`);
 });
 
 test('os limites são configuráveis por opção', () => {

@@ -47,8 +47,55 @@ export const KV_AGENDA_KEY = 'agenda';
 
 const UPSTREAM_URL = 'https://v3.football.api-sports.io/fixtures?live=all';
 
+/** Teto diário do plano free. É o denominador do livro-caixa local. */
+const DAILY_QUOTA = 100;
+
+/** Quanto esperar por uma resposta upstream antes de desistir. */
+const UPSTREAM_TIMEOUT_MS = 10_000;
+
+/**
+ * Dia UTC de um instante, no formato `AAAA-MM-DD`.
+ *
+ * A cota reseta às 00:00 UTC, então é esta chave que diz quando o livro-caixa
+ * zera. Função pura da entrada.
+ *
+ * @param {number} nowMs
+ * @returns {string}
+ */
+function dayKeyUTC(nowMs) {
+  return new Date(nowMs).toISOString().slice(0, 10);
+}
+
 /** Estado do rate limit, por isolate. Ver a limitação em `worker/http.js`. */
 const rateLimitState = new Map();
+
+/**
+ * Rede de segurança para quando o KV não aceita escrita.
+ *
+ * Se todo `put` falhar, o `state` nunca existe e cada tique do cron enxerga
+ * "nunca buscou" — medido, 181 requisições num dia, quase o dobro da cota
+ * inteira. Esta memória vive no isolate: é efêmera, não é compartilhada entre
+ * instâncias e **não substitui o KV**. Ela só evita que uma indisponibilidade
+ * de escrita vire gasto ilimitado enquanto o isolate durar.
+ *
+ * O gate usa o MAIOR `lastFetchAtMs` entre o KV e esta memória, e o MAIOR
+ * `spentToday`: na dúvida, assume que gastou mais e mais recentemente.
+ */
+let memoriaIsolate = { lastFetchAtMs: null, spentToday: 0, dayKeyUTC: '' };
+
+/**
+ * Zera o estado de módulo — rate limit e memória do isolate.
+ *
+ * Existe **só para os testes**. Sem ela, um teste que faz o cron buscar deixa
+ * `memoriaIsolate.lastFetchAtMs` marcado e o teste seguinte, no mesmo
+ * instante simulado, vê "buscou agora há pouco" e não busca — falhando por um
+ * motivo que não tem nada a ver com o que ele testa. Em produção não há
+ * chamador: o isolate morre e o estado vai junto.
+ */
+export function __resetIsolateState() {
+  rateLimitState.clear();
+  memoriaIsolate = { lastFetchAtMs: null, spentToday: 0, dayKeyUTC: '' };
+}
 
 /**
  * Milissegundos até o reset da cota, que é às 00:00 UTC.
@@ -91,7 +138,9 @@ async function readJson(kv, key) {
 
 const ESTADO_INICIAL = {
   lastFetchAtMs: null,
-  quotaRemaining: 100,
+  quotaRemaining: DAILY_QUOTA,
+  spentToday: 0,
+  dayKeyUTC: '',
   consecutiveFailures: 0,
   backoffUntilMs: 0,
 };
@@ -109,9 +158,73 @@ function normalizeState(bruto) {
       ? s.lastFetchAtMs
       : null,
     quotaRemaining: num(s.quotaRemaining, ESTADO_INICIAL.quotaRemaining),
+    spentToday: num(s.spentToday, 0),
+    dayKeyUTC: typeof s.dayKeyUTC === 'string' ? s.dayKeyUTC : '',
     consecutiveFailures: num(s.consecutiveFailures, 0),
     backoffUntilMs: num(s.backoffUntilMs, 0),
   };
+}
+
+/**
+ * Funde o estado do KV com a memória do isolate, sempre pelo lado pessimista.
+ *
+ * @param {typeof ESTADO_INICIAL} estadoKV
+ * @param {number} nowMs
+ * @returns {typeof ESTADO_INICIAL}
+ */
+function combinarComMemoria(estadoKV, nowMs) {
+  const hoje = dayKeyUTC(nowMs);
+  if (memoriaIsolate.dayKeyUTC !== hoje) return estadoKV;
+
+  const gastoKV = estadoKV.dayKeyUTC === hoje ? estadoKV.spentToday : 0;
+  return {
+    ...estadoKV,
+    lastFetchAtMs: Math.max(estadoKV.lastFetchAtMs ?? 0, memoriaIsolate.lastFetchAtMs ?? 0) || null,
+    spentToday: Math.max(gastoKV, memoriaIsolate.spentToday),
+    dayKeyUTC: hoje,
+  };
+}
+
+/**
+ * O LIVRO-CAIXA: quanto de cota resta, contando localmente.
+ *
+ * A reserva de 10 é a invariante mais dura do projeto, e antes disto a única
+ * coisa que a sustentava era o header `x-ratelimit-requests-remaining` —
+ * lido em quatro lugares do código e **nunca observado em captura nenhuma**.
+ * Se ele não vier, `readQuotaHeaders` devolve `null`, e repassar o valor
+ * anterior fazia a cota nunca descer: medido, 91 requisições num dia com o
+ * estado ainda dizendo 100 restantes.
+ *
+ * Agora o header é um teto a mais, não a fonte. O gasto é contado aqui, em
+ * toda tentativa real — sucesso e falha —, e zera na virada do dia UTC. O
+ * pior caso de perder o estado passa a ser recomeçar do zero, não recomeçar
+ * de 100.
+ *
+ * @param {typeof ESTADO_INICIAL} estado
+ * @param {number} nowMs
+ * @returns {{spentToday: number, quotaRemaining: number}}
+ */
+function ledger(estado, nowMs) {
+  const hoje = dayKeyUTC(nowMs);
+  const mesmoDia = estado.dayKeyUTC === hoje;
+
+  const spentToday = mesmoDia ? estado.spentToday : 0;
+  const porContagem = DAILY_QUOTA - spentToday;
+
+  // O valor do header vale para o DIA em que foi lido. Depois da virada ele é
+  // história: no fim de qualquer dia ele vale a reserva, e deixá-lo limitar o
+  // dia seguinte travaria o Worker para sempre — `hasUsableQuota(10)` é
+  // `false`, então nunca mais haveria busca. Morte silenciosa no primeiro dia.
+  // Estado sem `dayKeyUTC` não é "outro dia", é "dia desconhecido": o valor
+  // guardado continua sendo evidência de gasto recente e deve limitar. Só uma
+  // virada CONFIRMADA descarta o teto do header.
+  const diaDesconhecido = estado.dayKeyUTC === '';
+  const porHeader = (mesmoDia || diaDesconhecido) && Number.isFinite(estado.quotaRemaining)
+    ? estado.quotaRemaining
+    : Number.POSITIVE_INFINITY;
+
+  // O menor dos dois manda: o header pode mentir alto, a contagem não.
+  return { spentToday, quotaRemaining: Math.min(porHeader, porContagem) };
 }
 
 /**
@@ -191,7 +304,9 @@ async function handleScheduled(event, env) {
   const nowMs = typeof event?.scheduledTime === 'number' ? event.scheduledTime : Date.now();
   const kv = env.PLACAR_KV;
 
-  const estado = normalizeState(await readJson(kv, KV_STATE_KEY));
+  const estadoKV = normalizeState(await readJson(kv, KV_STATE_KEY));
+  const estado = combinarComMemoria(estadoKV, nowMs);
+  const caixa = ledger(estado, nowMs);
   const agendaBruta = await readJson(kv, KV_AGENDA_KEY);
   const agenda = Array.isArray(agendaBruta) ? agendaBruta : null;
 
@@ -203,7 +318,7 @@ async function handleScheduled(event, env) {
     nowMs,
     agenda,
     leagueIds,
-    quotaRemaining: estado.quotaRemaining,
+    quotaRemaining: caixa.quotaRemaining,
     msUntilReset: msUntilQuotaReset(nowMs),
     lastFetchAtMs: estado.lastFetchAtMs,
     backoffUntilMs: estado.backoffUntilMs,
@@ -219,6 +334,14 @@ async function handleScheduled(event, env) {
     return;
   }
 
+  // Registrado ANTES da chamada: se a invocação morrer no meio — timeout do
+  // runtime, subrequisição pendurada —, a tentativa já está contada.
+  memoriaIsolate = {
+    lastFetchAtMs: nowMs,
+    spentToday: caixa.spentToday + 1,
+    dayKeyUTC: dayKeyUTC(nowMs),
+  };
+
   let resposta;
   try {
     resposta = await fetch(UPSTREAM_URL, {
@@ -228,14 +351,18 @@ async function handleScheduled(event, env) {
         'x-apisports-key': env.API_FOOTBALL_KEY,
         accept: 'application/json',
       },
+      // Sem isto, uma subrequisição pendurada mata a invocação do cron antes
+      // de `registrarFalha` rodar: a requisição foi gasta, o backoff não
+      // existe, e no minuto seguinte tudo se repete.
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch {
-    await registrarFalha(kv, estado, nowMs, { rateLimited: false });
+    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false });
     return;
   }
 
   if (!resposta.ok) {
-    await registrarFalha(kv, estado, nowMs, { rateLimited: resposta.status === 429 });
+    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: resposta.status === 429 });
     return;
   }
 
@@ -248,7 +375,7 @@ async function handleScheduled(event, env) {
     // partida é utilizável. Todos esses são falha, não "zero jogos".
     relatorio = toFixturesWithReport(await resposta.json());
   } catch {
-    await registrarFalha(kv, estado, nowMs, { rateLimited: false }, quotaRemaining);
+    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false }, quotaRemaining);
     return;
   }
 
@@ -263,16 +390,23 @@ async function handleScheduled(event, env) {
     intervalMs: decisao.intervalMs,
   });
 
-  await kv.put(KV_SNAPSHOT_KEY, JSON.stringify(snapshot));
+  // ORDEM DELIBERADA: `state` primeiro. As duas escritas não são atômicas, e
+  // se a segunda falhar é melhor sobrar "buscou, mas o snapshot é velho" — o
+  // cliente vê vermelho no staleness — do que "dado novo e o portão não soube
+  // que gastou", que era o caminho para uma requisição por minuto sem freio.
+  // Medido no desenho anterior: 181 requisições num dia.
   await kv.put(
     KV_STATE_KEY,
     JSON.stringify({
       lastFetchAtMs: nowMs,
-      quotaRemaining: quotaRemaining ?? estado.quotaRemaining,
+      quotaRemaining: quotaRemaining ?? caixa.quotaRemaining - 1,
+      spentToday: caixa.spentToday + 1,
+      dayKeyUTC: dayKeyUTC(nowMs),
       consecutiveFailures: 0,
       backoffUntilMs: 0,
     }),
   );
+  await kv.put(KV_SNAPSHOT_KEY, JSON.stringify(snapshot));
 }
 
 /**
@@ -284,17 +418,22 @@ async function handleScheduled(event, env) {
  *
  * @param {any} kv
  * @param {typeof ESTADO_INICIAL} estado
+ * @param {{spentToday: number, quotaRemaining: number}} caixa
  * @param {number} nowMs
  * @param {{rateLimited: boolean}} contexto
  * @param {number|null} [quotaRemaining]
  */
-async function registrarFalha(kv, estado, nowMs, contexto, quotaRemaining = null) {
+async function registrarFalha(kv, estado, caixa, nowMs, contexto, quotaRemaining = null) {
   const falhas = estado.consecutiveFailures + 1;
   await kv.put(
     KV_STATE_KEY,
     JSON.stringify({
       lastFetchAtMs: nowMs,
-      quotaRemaining: quotaRemaining ?? Math.max(0, estado.quotaRemaining - 1),
+      quotaRemaining: quotaRemaining ?? Math.max(0, caixa.quotaRemaining - 1),
+      // A tentativa gastou cota mesmo tendo falhado. Não contar aqui seria a
+      // forma mais rápida de furar a reserva num dia de instabilidade.
+      spentToday: caixa.spentToday + 1,
+      dayKeyUTC: dayKeyUTC(nowMs),
       consecutiveFailures: falhas,
       backoffUntilMs: nowMs + nextBackoffMs(falhas, contexto),
     }),
@@ -323,6 +462,15 @@ export default {
    */
   async scheduled(event, env, ctx) {
     void ctx;
-    await handleScheduled(event, env);
+    try {
+      await handleScheduled(event, env);
+    } catch {
+      // Exceção que escapa daqui é pior que o erro que a causou: sem
+      // `state` gravado, o portão não sabe que houve tentativa e o cron volta
+      // no minuto seguinte, sem intervalo e sem backoff. Engolir e deixar o
+      // próximo tique decidir é o comportamento seguro — o `state` só não
+      // avança quando nem o KV está aceitando escrita, e aí não há o que
+      // fazer daqui.
+    }
   },
 };

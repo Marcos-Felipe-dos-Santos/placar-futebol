@@ -34,7 +34,20 @@ export const SNAPSHOT_VERSION = 1;
  *   Quantas partidas vieram na resposta. É o denominador de `discarded`: sem
  *   ele a UI diz "3 descartadas" sem poder dizer "de 19".
  * @property {boolean} truncated
- * @property {number} intervalMs  Intervalo upstream vigente quando gravado.
+ * @property {number} intervalMs
+ *   Intervalo upstream vigente quando gravado. Serve para EXIBIR o ritmo.
+ *
+ *   **NUNCA use este número como régua de frescor.** Ele vem de
+ *   `computePollInterval`, que codifica duas coisas no mesmo valor: o ritmo
+ *   desejado e o freio da cota. Com `quotaRemaining: 11` o intervalo vale
+ *   3 HORAS — e essa busca acontece, porque `hasUsableQuota(11)` é `true`, de
+ *   modo que o número vai para o KV num snapshot de sucesso. Um cliente que
+ *   fizesse "considere fresco até `fetchedAtMs + intervalMs`" pintaria verde
+ *   por três horas.
+ *
+ *   Para frescor existe `isStale`, com `FRESH_MAX_MS` próprio. Foi a mesma
+ *   confusão — "a cota acabou" contra "o reset está perto" no mesmo número —
+ *   que furou a reserva da agenda no portão do cron.
  */
 
 /**

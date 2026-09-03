@@ -96,7 +96,6 @@ function estado(overrides = {}) {
     quotaRemaining: 90,
     msUntilReset: 2 * HOUR,
     lastFetchAtMs: null,
-    consecutiveFailures: 0,
     backoffUntilMs: 0,
     ...overrides,
   };
@@ -214,5 +213,63 @@ test('falhar aberto não fura a cota nem ignora o backoff', () => {
   assert.equal(
     decideCronAction(estado({ agenda: null, backoffUntilMs: T0 + 10 * HOUR })).reason,
     'backoff',
+  );
+});
+
+test('regressão: reserva no limite e muito tempo sem buscar NÃO autoriza busca', () => {
+  // O bug literal que motivou `hasUsableQuota`. Com a cota exatamente na
+  // reserva e um decorrido MAIOR que o intervalo, a comparação
+  // `agora - ultimaBusca >= intervalMs` dava verdadeira — porque o intervalo
+  // era grande, não porque havia cota — e a reserva ia embora.
+  //
+  // O decorrido tem que superar o intervalo, senão o resultado seria
+  // `too-soon` e apagar o guard de cota não mudaria `shouldFetch`: o teste
+  // passaria sem testar nada.
+  const nowMs = T0 + 20 * HOUR;
+  const d = decideCronAction({
+    nowMs,
+    agenda: [agendado('71', nowMs - HOUR)],
+    leagueIds: DEFAULT_LEAGUE_ID_SET,
+    quotaRemaining: AGENDA_RESERVE,
+    msUntilReset: 30 * 60_000,
+    lastFetchAtMs: nowMs - 12 * HOUR,
+    backoffUntilMs: 0,
+  });
+
+  assert.ok(
+    nowMs - (nowMs - 12 * HOUR) > d.intervalMs,
+    'premissa do teste: o decorrido tem que superar o intervalo',
+  );
+  assert.equal(d.shouldFetch, false, 'a reserva foi consumida');
+  assert.equal(d.reason, 'quota-exhausted');
+});
+
+test('controle positivo: uma requisição acima da reserva autoriza a busca', () => {
+  // Sem isto o teste acima passaria mesmo se o portão nunca buscasse nada.
+  const nowMs = T0 + 20 * HOUR;
+  const d = decideCronAction({
+    nowMs,
+    agenda: [agendado('71', nowMs - HOUR)],
+    leagueIds: DEFAULT_LEAGUE_ID_SET,
+    quotaRemaining: AGENDA_RESERVE + 1,
+    msUntilReset: 30 * 60_000,
+    lastFetchAtMs: nowMs - 12 * HOUR,
+    backoffUntilMs: 0,
+  });
+  assert.equal(d.shouldFetch, true);
+});
+
+test('fail-open polla no ritmo OCIOSO: incerteza não é certeza de jogo', () => {
+  // Medido: no ritmo ativo, um dia com agenda ausente queima as 90
+  // requisições até 12h BRT e o jogo da noite fica descoberto. Tratar "não
+  // sei se há jogo" como "há jogo com certeza" é o erro — a mesma família da
+  // confusão entre agenda vazia e agenda ausente.
+  const comAgenda = decideCronAction(estado());
+  const semAgenda = decideCronAction(estado({ agenda: null }));
+
+  assert.equal(semAgenda.shouldFetch, true, 'continua falhando aberto');
+  assert.ok(
+    semAgenda.intervalMs > comAgenda.intervalMs * 3,
+    `fail-open a ${semAgenda.intervalMs}ms contra ${comAgenda.intervalMs}ms com agenda: rápido demais para incerteza`,
   );
 });

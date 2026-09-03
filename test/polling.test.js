@@ -268,7 +268,7 @@ test('o resultado é um inteiro de ms — setTimeout/cron não lidam com fraçã
   assert.equal(ms, Math.trunc(ms));
 });
 
-test('hasUsableQuota separa "cota acabou" de "reset está perto"', () => {
+test('hasUsableQuota responde só sobre a cota, e a reserva não é utilizável', () => {
   // A confusão entre os dois deixava um gap longo desde a última busca furar
   // a reserva da agenda: `agora - ultimaBusca >= intervalo` dava verdadeira
   // porque o intervalo era grande, e não porque havia cota.
@@ -279,18 +279,6 @@ test('hasUsableQuota separa "cota acabou" de "reset está perto"', () => {
   assert.equal(hasUsableQuota(0), false);
 });
 
-test('a exaustão da cota não depende de quanto tempo passou desde a última busca', () => {
-  // Era o bug: com a reserva no limite e três horas sem buscar, a comparação
-  // `agora - ultimaBusca >= intervalo` dava verdadeira porque o intervalo era
-  // grande, e a reserva ia embora. A resposta tem que ser a mesma
-  // independentemente do relógio, porque a pergunta é só sobre a cota.
-  for (const quota of [0, AGENDA_RESERVE, AGENDA_RESERVE + 1, 90]) {
-    const esperado = hasUsableQuota(quota);
-    for (let i = 0; i < 5; i += 1) {
-      assert.equal(hasUsableQuota(quota), esperado, `resposta variou para quota ${quota}`);
-    }
-  }
-});
 
 test('hasUsableQuota respeita a reserva configurada', () => {
   assert.equal(hasUsableQuota(20, { reserve: 25 }), false);

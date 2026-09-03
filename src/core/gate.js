@@ -98,8 +98,15 @@ export function decideCronAction(input, options = {}) {
     backoffUntilMs = 0,
   } = input;
 
+  // Agenda AUSENTE não é agenda vazia (ver abaixo). Aqui a distinção também
+  // muda o RITMO: sem saber se há jogo, o poll usa o ritmo ocioso. Medido, no
+  // ritmo ativo um dia sem agenda queima as 90 requisições até o meio-dia e
+  // deixa a noite — quando o usuário assiste — descoberta. Incerteza polla
+  // devagar; certeza polla rápido.
+  const agendaDesconhecida = agenda == null;
+
   const intervalMs = computePollInterval(
-    { quotaRemaining, msUntilReset, hasLiveFavorite: true },
+    { quotaRemaining, msUntilReset, hasLiveFavorite: !agendaDesconhecida },
     options,
   );
 
@@ -107,14 +114,10 @@ export function decideCronAction(input, options = {}) {
     return { shouldFetch: false, reason: 'backoff', intervalMs };
   }
 
-  // Agenda AUSENTE não é agenda vazia, e confundi-las é a diferença entre uma
-  // economia e um apagão. `[]` significa "consultei e não há jogo": portão
-  // fecha, custo zero. `null` significa "não tenho a agenda" — e fechar aí
-  // deixaria o Worker sem nunca buscar, com a página correta e vazia, que é
-  // indistinguível de quebrada. Falha aberto, com o motivo no snapshot, e o
-  // gasto continua limitado pelo orçamento de cota logo abaixo.
-  const agendaDesconhecida = agenda == null;
-
+  // `[]` significa "consultei e não há jogo": portão fecha, custo zero.
+  // `null` significa "não tenho a agenda" — e fechar aí deixaria o Worker sem
+  // nunca buscar, com a página correta e vazia, que é indistinguível de
+  // quebrada. Falha aberto, com o motivo no snapshot.
   if (!agendaDesconhecida && !hasMatchInProgress(agenda, nowMs, leagueIds, options)) {
     return { shouldFetch: false, reason: 'no-live-match', intervalMs };
   }
