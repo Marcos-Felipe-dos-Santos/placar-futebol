@@ -641,6 +641,20 @@ test('agenda: item sem liga ou sem data é descartado e CONTADO', () => {
   assert.equal(r.terminal, 0, 'descarte por payload não pode ser contado como terminal');
 });
 
+test('agenda: terminal + indecifrável não lança — o terminal prova que a resposta era real', () => {
+  // A terceira ramificação do guard, que os dois testes vizinhos não cobrem:
+  // um deles é só terminal, o outro é só lixo. Aqui há dos dois e nada
+  // utilizável. NÃO lança, e é deliberado — uma partida terminal é evidência
+  // de que a resposta veio de verdade, então `[]` significa mesmo "não há mais
+  // jogo hoje". Lançar aqui jogaria o Worker em fail-open num dia que ele
+  // conseguiu ler.
+  const r = toAgendaWithReport(envelopeAgenda([agendaFT, { fixture: {}, league: {} }]));
+
+  assert.deepEqual(r.entries, []);
+  assert.equal(r.terminal, 1);
+  assert.equal(r.discarded, 1, 'o item indecifrável tem que continuar contado como perda');
+});
+
 test('agenda: envelope inválido lança pelas mesmas regras do ao vivo', () => {
   // Mesma validação compartilhada: `errors` preenchido chega com HTTP 200, e
   // checar só o status code não pega.

@@ -325,22 +325,29 @@ test('excesso de requisições do mesmo IP vira 429 com Retry-After', async () =
 
 // === o cron =================================================================
 
+/** Dia UTC de T0 — o mesmo que o cron calcula de `scheduledTime`. */
+const DIA_T0 = new Date(T0).toISOString().slice(0, 10);
+
+/**
+ * Agenda guardada no KV: entradas MAIS o dia que elas cobrem.
+ *
+ * O dia viaja junto de propósito. Agenda de outro dia lê como `null` e o
+ * Worker falha aberto, em vez de usar os kickoffs de ontem — que estão 24h
+ * fora da janela de 3h e fariam o portão dizer "não há jogo" o dia inteiro.
+ */
+function agendaGuardada(entries, dia = DIA_T0) {
+  return JSON.stringify({ dayKeyUTC: dia, entries });
+}
+
 /** Agenda com uma partida do Brasileirão em andamento agora. */
 function agendaComJogo() {
-  return JSON.stringify([
-    makeFixture({
-      id: 'ag1',
-      leagueId: '71',
-      kickoffISO: new Date(T0 - 30 * 60_000).toISOString(),
-      status: 'scheduled',
-      homeGoals: null,
-      awayGoals: null,
-    }),
+  return agendaGuardada([
+    { leagueId: '71', kickoffISO: new Date(T0 - 30 * 60_000).toISOString() },
   ]);
 }
 
 /** Agenda consultada, sem jogo de interesse. */
-const agendaVazia = JSON.stringify([]);
+const agendaVazia = agendaGuardada([]);
 
 test('cron: sem jogo de interesse, não chama upstream E não escreve no KV', async () => {
   // Regra 3. Se escrevesse, o timestamp mentiria sobre o frescor e o isStale
@@ -356,16 +363,8 @@ test('cron: sem jogo de interesse, não chama upstream E não escreve no KV', as
 
 /** Agenda com jogo ao vivo SÓ numa liga fora da semente (Premier League). */
 function agendaSoLigaNaoSemente() {
-  return JSON.stringify([
-    makeFixture({
-      id: 'ag2',
-      leagueId: '39',
-      leagueName: 'Premier League',
-      kickoffISO: new Date(T0 - 30 * 60_000).toISOString(),
-      status: 'scheduled',
-      homeGoals: null,
-      awayGoals: null,
-    }),
+  return agendaGuardada([
+    { leagueId: '39', kickoffISO: new Date(T0 - 30 * 60_000).toISOString() },
   ]);
 }
 
@@ -554,15 +553,46 @@ test('cron sem chave configurada não chama upstream nem quebra o Worker', async
   assert.deepEqual(chamadas, [], 'tentou buscar sem chave');
 });
 
-test('agenda ausente no KV faz o cron falhar aberto, não emudecer', async () => {
-  // Sem agenda o portão fecharia para sempre e o produto morreria em
-  // silêncio. Falha aberto; a cota continua limitada pelo orçamento.
+test('agenda ausente: o tique busca a AGENDA, não o ao vivo', async () => {
+  // A agenda vem antes no mesmo tique, e a invocação termina aí: duas
+  // requisições upstream no mesmo minuto gastariam o dobro por um dado que só
+  // muda uma vez por dia.
   const kv = fakeKV({});
   const { chamadas } = await comFetchEspiao(
-    async () => respostaUpstream(envelope([primeiroTempo])),
+    async () => respostaUpstream({ ...envelopeVazio, results: 0, response: [] }),
     () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
   );
+
   assert.equal(chamadas.length, 1);
+  assert.match(String(chamadas[0][0]), /fixtures\?date=2026-09-03/, 'não buscou a agenda do dia UTC');
+  assert.ok(!kv.store.has(KV_SNAPSHOT_KEY), 'gastou também no ao vivo no mesmo tique');
+});
+
+test('agenda que falhou faz o cron falhar ABERTO, não emudecer', async () => {
+  // O caso que mata o produto em silêncio: sem agenda o portão fecharia para
+  // sempre e a página ficaria correta e vazia. Aqui a busca da agenda falha, e
+  // no tique seguinte — já fora do espaçamento entre tentativas — o cron
+  // precisa buscar o ao vivo assim mesmo.
+  const kv = fakeKV({});
+  // Um minuto depois: DENTRO do espaçamento entre tentativas de agenda, então
+  // este tique não retenta a agenda — e é justamente aí que o ao vivo tem de
+  // continuar acontecendo. Se o fail-open só valesse depois das três
+  // tentativas, o produto ficaria 30 minutos mudo por um erro de agenda.
+  const umMinutoDepois = T0 + 60_000;
+
+  const { chamadas } = await comFetchEspiao(
+    async (url) => (String(url).includes('date=')
+      ? new Response('boom', { status: 500 })
+      : respostaUpstream(envelope([primeiroTempo]))),
+    async () => {
+      await worker.scheduled({ scheduledTime: T0 }, env(kv), {});
+      await worker.scheduled({ scheduledTime: umMinutoDepois }, env(kv), {});
+    },
+  );
+
+  assert.equal(chamadas.length, 2);
+  assert.match(String(chamadas[0][0]), /date=/, 'o primeiro tique não tentou a agenda');
+  assert.match(String(chamadas[1][0]), /live=all/, 'o segundo tique não caiu no fail-open');
 
   // E o snapshot tem de DIZER que buscou às cegas. Sem isto a página mostra
   // uma grade curta sem explicação, que é "correta e vazia" — o modo de falha
@@ -583,6 +613,270 @@ test('com agenda, o snapshot registra busca normal — não "às cegas"', async 
   );
 
   assert.equal(parseSnapshot(kv.store.get(KV_SNAPSHOT_KEY)).reason, 'due');
+});
+
+// === a busca da agenda ======================================================
+
+/** Envelope de agenda vindo do upstream, com uma partida do Brasileirão. */
+function respostaAgenda(entries = [{ liga: 71, data: '2026-09-03T21:30:00+00:00' }]) {
+  return respostaUpstream({
+    get: 'fixtures',
+    parameters: { date: DIA_T0 },
+    errors: [],
+    results: entries.length,
+    paging: { current: 1, total: 1 },
+    response: entries.map((e, i) => ({
+      fixture: { id: 9000 + i, date: e.data, status: { short: 'NS', elapsed: null } },
+      league: { id: e.liga, name: 'Liga' },
+      teams: { home: { name: 'A' }, away: { name: 'B' } },
+      goals: { home: null, away: null },
+    })),
+  });
+}
+
+test('agenda: grava reduzida e COM o dia que ela cobre', async () => {
+  const kv = fakeKV({});
+  await comFetchEspiao(
+    async () => respostaAgenda(),
+    () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  const guardado = JSON.parse(kv.store.get(KV_AGENDA_KEY));
+  assert.equal(guardado.dayKeyUTC, DIA_T0, 'sem o dia, a agenda de ontem se passa pela de hoje');
+  assert.deepEqual(guardado.entries, [
+    { leagueId: '71', kickoffISO: '2026-09-03T21:30:00+00:00' },
+  ], 'gravou mais que leagueId e kickoffISO');
+});
+
+test('agenda: gravada, o tique seguinte usa o portão de verdade e busca ao vivo', async () => {
+  // O caminho inteiro: sem agenda -> busca agenda -> portão abre pelo
+  // Brasileirão -> busca ao vivo com reason 'due', não mais 'no-agenda'.
+  const kv = fakeKV({});
+  const { chamadas } = await comFetchEspiao(
+    async (url) => (String(url).includes('date=')
+      ? respostaAgenda()
+      : respostaUpstream(envelope([primeiroTempo]))),
+    async () => {
+      await worker.scheduled({ scheduledTime: T0 }, env(kv), {});
+      await worker.scheduled({ scheduledTime: T0 + 60_000 }, env(kv), {});
+    },
+  );
+
+  assert.equal(chamadas.length, 2);
+  assert.match(String(chamadas[1][0]), /live=all/);
+  assert.equal(
+    parseSnapshot(kv.store.get(KV_SNAPSHOT_KEY)).reason,
+    'due',
+    'com agenda em mãos o cron ainda se diz às cegas',
+  );
+});
+
+test('agenda: dia sem jogo de interesse fecha o portão a custo zero', async () => {
+  // Controle positivo do teste acima. A agenda respondeu, não há liga da
+  // semente, e o cron NÃO gasta mais nada — é a terça-feira que custa zero.
+  const kv = fakeKV({});
+  const { chamadas } = await comFetchEspiao(
+    async () => respostaAgenda([{ liga: 39, data: '2026-09-03T21:30:00+00:00' }]),
+    async () => {
+      await worker.scheduled({ scheduledTime: T0 }, env(kv), {});
+      await worker.scheduled({ scheduledTime: T0 + 60_000 }, env(kv), {});
+    },
+  );
+
+  assert.equal(chamadas.length, 1, 'gastou no ao vivo com a agenda dizendo que não há jogo');
+  assert.ok(!kv.store.has(KV_SNAPSHOT_KEY));
+});
+
+test('agenda: com a de ontem no KV, busca a de hoje em vez de usá-la', async () => {
+  // Usar a de ontem faria o portão dizer "não há jogo" o dia inteiro, com a
+  // página correta e vazia. O dia guardado junto é o que impede isso.
+  const kv = fakeKV({
+    [KV_AGENDA_KEY]: agendaGuardada(
+      [{ leagueId: '71', kickoffISO: '2026-09-02T21:30:00+00:00' }],
+      '2026-09-02',
+    ),
+  });
+  const { chamadas } = await comFetchEspiao(
+    async () => respostaAgenda(),
+    () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  assert.match(String(chamadas[0][0]), /date=/, 'usou a agenda de ontem como se fosse a de hoje');
+  assert.equal(JSON.parse(kv.store.get(KV_AGENDA_KEY)).dayKeyUTC, DIA_T0);
+});
+
+test('agenda: a chave vai no header e nunca na URL', async () => {
+  const kv = fakeKV({});
+  const { chamadas } = await comFetchEspiao(
+    async () => respostaAgenda(),
+    () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  const [url, init] = chamadas[0];
+  assert.ok(!String(url).includes('chave-de-teste'), 'chave vazou na URL');
+  assert.equal(init.headers['x-apisports-key'], 'chave-de-teste');
+});
+
+test('agenda: A RESERVA é dela — busca com cota que barra o poll ao vivo', async () => {
+  // 5 restantes: `hasUsableQuota` é falso e o ao vivo está barrado. A agenda
+  // tem de conseguir gastar assim mesmo, senão a reserva guarda cota para uma
+  // busca que nunca acontece e o Worker fica em fail-open para sempre.
+  const kv = fakeKV({
+    [KV_STATE_KEY]: JSON.stringify({
+      lastFetchAtMs: T0 - 10 * 60_000,
+      quotaRemaining: 5,
+      spentToday: 95,
+      dayKeyUTC: DIA_T0,
+      consecutiveFailures: 0,
+      backoffUntilMs: 0,
+    }),
+  });
+  const { chamadas } = await comFetchEspiao(
+    async () => respostaAgenda(),
+    () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  assert.equal(chamadas.length, 1, 'a agenda não conseguiu gastar a reserva que é dela');
+  assert.match(String(chamadas[0][0]), /date=/);
+});
+
+test('agenda: upstream fora do ar não queima a reserva — para no teto', async () => {
+  // Sem teto isto seriam 10 tentativas em 10 minutos e a reserva iria embora,
+  // levando o poll ao vivo junto. Literais 3 e 4: se o teto mudar, este teste
+  // tem de ser reavaliado à mão, não seguir a constante.
+  const kv = fakeKV({});
+  const { chamadas } = await comFetchEspiao(
+    async () => new Response('boom', { status: 500 }),
+    async () => {
+      // Quatro tentativas espaçadas de 16 min, uma a mais que o teto de 3.
+      for (let i = 0; i < 4; i += 1) {
+        await worker.scheduled({ scheduledTime: T0 + i * 16 * 60_000 }, env(kv), {});
+      }
+    },
+  );
+
+  const daAgenda = chamadas.filter(([url]) => String(url).includes('date='));
+  assert.equal(daAgenda.length, 3, 'o teto de tentativas de agenda não segurou');
+});
+
+test('agenda: a virada do dia UTC zera contador E horário da última tentativa', async () => {
+  // BUG REAL, encontrado antes de existir consumidor. Com uma tentativa às
+  // 23:50 UTC e o tique das 00:01 do dia seguinte, o contador zerava pelo
+  // livro-caixa e o timestamp NÃO — o espaçamento de 15 min de ontem bloqueava
+  // a agenda de hoje justamente no instante em que ela deve ser buscada, e o
+  // cron ficava em fail-open gastando cota até as 00:05.
+  //
+  // Terceiro bug de virada de dia deste projeto, e todos com a mesma forma:
+  // dois campos que descrevem o mesmo fato zerando por critérios diferentes.
+  const ontem2350 = Date.parse('2026-09-02T23:50:00.000Z');
+  const hoje0001 = Date.parse('2026-09-03T00:01:00.000Z');
+  const kv = fakeKV({
+    [KV_STATE_KEY]: JSON.stringify({
+      lastFetchAtMs: ontem2350,
+      quotaRemaining: 4,
+      spentToday: 96,
+      dayKeyUTC: '2026-09-02',
+      consecutiveFailures: 0,
+      backoffUntilMs: 0,
+      agendaAttemptsToday: 3,
+      agendaLastAttemptMs: ontem2350,
+    }),
+  });
+
+  const { chamadas } = await comFetchEspiao(
+    async () => respostaAgenda([{ liga: 71, data: '2026-09-03T21:30:00+00:00' }]),
+    () => worker.scheduled({ scheduledTime: hoje0001 }, env(kv), {}),
+  );
+
+  assert.equal(chamadas.length, 1, 'o espaçamento de ontem bloqueou a agenda de hoje');
+  assert.match(String(chamadas[0][0]), /date=2026-09-03/);
+
+  const estado = JSON.parse(kv.store.get(KV_STATE_KEY));
+  assert.equal(estado.agendaAttemptsToday, 1, 'o contador não zerou na virada');
+  assert.equal(estado.spentToday, 1, 'o gasto de ontem não zerou na virada');
+});
+
+test('agenda: DENTRO do mesmo dia o espaçamento continua valendo', async () => {
+  // Controle positivo do teste acima: se a virada de dia fosse "zerar sempre",
+  // o espaçamento nunca seguraria nada e três tentativas cairiam no mesmo
+  // minuto — que é o que o espaçamento existe para impedir.
+  const kv = fakeKV({
+    [KV_STATE_KEY]: JSON.stringify({
+      lastFetchAtMs: T0 - 60_000,
+      quotaRemaining: 90,
+      spentToday: 10,
+      dayKeyUTC: DIA_T0,
+      consecutiveFailures: 0,
+      backoffUntilMs: 0,
+      agendaAttemptsToday: 1,
+      agendaLastAttemptMs: T0 - 60_000,
+    }),
+  });
+
+  const { chamadas } = await comFetchEspiao(
+    async () => respostaUpstream(envelope([primeiroTempo])),
+    () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  const daAgenda = chamadas.filter(([url]) => String(url).includes('date='));
+  assert.deepEqual(daAgenda, [], 'tentou a agenda 1 minuto depois da anterior');
+});
+
+test('agenda: sem chave configurada não conta tentativa', async () => {
+  // Problema de configuração não pode consumir o teto diário e deixar o dia
+  // sem agenda depois que a chave for cadastrada.
+  const kv = fakeKV({});
+  const semChave = { PLACAR_KV: kv };
+  const { chamadas } = await comFetchEspiao(null, () =>
+    worker.scheduled({ scheduledTime: T0 }, semChave, {}),
+  );
+
+  assert.deepEqual(chamadas, []);
+  assert.deepEqual(kv.puts, [], 'contou tentativa sem ter gasto requisição nenhuma');
+});
+
+test('agenda: resposta com errors não vira agenda vazia', async () => {
+  // `errors` preenchido chega com HTTP 200. Gravar uma lista vazia a partir
+  // dele fecharia o portão o dia inteiro dizendo "não há jogo", que é mentira.
+  const kv = fakeKV({});
+  await comFetchEspiao(
+    async () => respostaUpstream({
+      ...envelopeVazio,
+      errors: { plan: 'não cobre o endpoint' },
+      results: 0,
+      response: [],
+    }),
+    () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  assert.ok(!kv.store.has(KV_AGENDA_KEY), 'gravou agenda a partir de resposta com errors');
+  // Mas a tentativa foi gasta e tem de estar contada.
+  const estado = JSON.parse(kv.store.get(KV_STATE_KEY));
+  assert.equal(estado.agendaAttemptsToday, 1);
+  assert.equal(estado.spentToday, 1, 'a requisição foi gasta e não foi contabilizada');
+});
+
+test('agenda: a tentativa é contada ANTES da chamada', async () => {
+  // Se a invocação morrer no meio, a requisição já foi gasta e precisa estar
+  // contada — senão o teto nunca sobe e a reserva evapora.
+  const kv = {
+    async get() { return null; },
+    async put() { throw new Error('KV recusando escrita'); },
+  };
+  const { chamadas } = await comFetchEspiao(
+    async () => { throw new Error('conexão morreu no meio'); },
+    async () => {
+      for (let i = 0; i < 4; i += 1) {
+        await worker.scheduled({ scheduledTime: T0 + i * 16 * 60_000 }, env(kv), {});
+      }
+    },
+  );
+
+  const daAgenda = chamadas.filter(([url]) => String(url).includes('date='));
+  assert.equal(daAgenda.length, 3, 'sem KV gravável a memória do isolate não segurou o teto');
+  // E o quarto tique não fica mudo: esgotadas as tentativas, o cron cai no
+  // fail-open e busca o ao vivo. Teto de agenda não pode virar apagão.
+  assert.match(String(chamadas[3][0]), /live=all/, 'esgotar a agenda emudeceu o produto');
 });
 
 // === o livro-caixa da cota ==================================================

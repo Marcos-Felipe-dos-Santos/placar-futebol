@@ -114,9 +114,34 @@ cópias divergem.
 **Não filtre por liga no escritor** — daria zero entradas na captura de 2026-09-04, e assaria
 `DEFAULT_LEAGUE_IDS` num dado gravado uma vez por dia. O filtro é do leitor.
 
-**O cron continua em fail-open, e vai continuar até existir quem GRAVE a chave `agenda`.** Hoje o
-Worker só a lê; nada escreve. O adaptador é a metade de baixo do caminho — a de cima é uma busca
-diária contra a reserva de 10 requisições, com portão próprio, e ela ainda não existe.
+**A busca diária da agenda existe** (`src/core/agenda.js` + `buscarAgenda` no Worker) e o cron sai
+do fail-open assim que ela grava. As decisões, para não serem redecididas:
+
+- **Sai da reserva de 10, não de orçamento próprio.** Uma fonte de verdade para "quanto posso
+  gastar hoje". Dois orçamentos divergem, e três bugs deste projeto nasceram da virada do dia UTC.
+  Por isso os contadores de tentativa zeram no MESMO discriminador do `ledger`.
+- **A régua de cota é `quotaRemaining > 0`, NUNCA `hasUsableQuota`.** A reserva existe justamente
+  para a agenda gastar quando o poll ao vivo já não pode; medi-la com a régua do poll faria a
+  reserva guardar cota para uma busca que nunca acontece. Há teste que prende isso com
+  `quotaRemaining: 5`.
+- **O portão é a virada do dia, sem segundo relógio.** A condição é "não tenho agenda para o
+  `dayKeyUTC` corrente", e ela passa a valer sozinha às 00:00 UTC = 21:00 BRT, que é o reset da
+  cota e o começo do dia que a agenda cobre. Não acrescente checagem de horário: seria um segundo
+  relógio divergindo do que já governa o livro-caixa.
+- **A agenda guarda o dia junto com as entradas.** `{dayKeyUTC, entries}`. Agenda de outro dia lê
+  como `null` — **nunca `[]`** —, porque os kickoffs de ontem estão 24h fora da janela de 3h e
+  fariam o portão dizer "não há jogo" o dia inteiro, com a página correta e vazia.
+- **Falha da agenda não inventa estado.** Não há `reason` novo nem campo de erro no snapshot: o
+  `reason: 'no-agenda'` já existe, já é servido, e o Worker segue em fail-open.
+- **Teto de 3 tentativas/dia, espaçadas de 15 min — e isto ESTENDE a decisão do dev.** É estado
+  interno novo no `state` (`agendaAttemptsToday`, `agendaLastAttemptMs`), não campo visível ao
+  cliente. Sem teto, o portão "não tenho agenda" fica aberto e o cron tenta a cada tique: 10
+  tentativas em 10 minutos, reserva zerada, e aí `hasUsableQuota` fica falso e o poll ao vivo morre
+  junto. Os contadores também vivem na memória do isolate, senão um dia de KV instável — justamente
+  quando a reserva mais importa — não teria teto nenhum.
+- **O tique que busca a agenda NÃO busca o ao vivo.** Duas requisições no mesmo minuto por um dado
+  que muda uma vez ao dia. O tique seguinte chega em 60s já com a agenda no lugar; nos tiques entre
+  tentativas o fail-open continua acontecendo, então uma agenda quebrada não emudece o produto.
 
 No `STATUS_MAP`, sete códigos foram medidos: `1H`, `2H` e `HT` em `live=all`; `NS`, `FT`, `PST` e
 `PEN` em `date=`. Os outros doze são inferência da documentação e estão marcados como tal no

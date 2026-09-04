@@ -39,6 +39,12 @@ import { decideCronAction } from './src/core/gate.js';
 import { activeLeagueIds } from './src/core/leagues.js';
 import { nextBackoffMs } from './src/core/backoff.js';
 import { buildSnapshot, parseSnapshot, toPublicCronState } from './src/core/snapshot.js';
+import { toAgenda } from './src/adapters/apiFootball.js';
+import {
+  buildStoredAgenda,
+  parseStoredAgenda,
+  decideAgendaFetch,
+} from './src/core/agenda.js';
 import { checkRateLimit, routeRequest } from './src/worker/http.js';
 
 export const KV_SNAPSHOT_KEY = 'snapshot';
@@ -46,6 +52,15 @@ export const KV_STATE_KEY = 'state';
 export const KV_AGENDA_KEY = 'agenda';
 
 const UPSTREAM_URL = 'https://v3.football.api-sports.io/fixtures?live=all';
+
+/**
+ * A agenda do dia. `date=` recebe o dia UTC corrente — o mesmo `dayKeyUTC` que
+ * governa o livro-caixa, e não uma segunda noção de "hoje".
+ *
+ * @param {string} dayKey
+ * @returns {string}
+ */
+const agendaUrl = (dayKey) => `https://v3.football.api-sports.io/fixtures?date=${dayKey}`;
 
 /** Teto diário do plano free. É o denominador do livro-caixa local. */
 const DAILY_QUOTA = 100;
@@ -81,7 +96,7 @@ const rateLimitState = new Map();
  * O gate usa o MAIOR `lastFetchAtMs` entre o KV e esta memória, e o MAIOR
  * `spentToday`: na dúvida, assume que gastou mais e mais recentemente.
  */
-let memoriaIsolate = { lastFetchAtMs: null, spentToday: 0, dayKeyUTC: '' };
+let memoriaIsolate = { lastFetchAtMs: null, spentToday: 0, dayKeyUTC: '', agendaAttemptsToday: 0, agendaLastAttemptMs: null };
 
 /**
  * Zera o estado de módulo — rate limit e memória do isolate.
@@ -94,7 +109,7 @@ let memoriaIsolate = { lastFetchAtMs: null, spentToday: 0, dayKeyUTC: '' };
  */
 export function __resetIsolateState() {
   rateLimitState.clear();
-  memoriaIsolate = { lastFetchAtMs: null, spentToday: 0, dayKeyUTC: '' };
+  memoriaIsolate = { lastFetchAtMs: null, spentToday: 0, dayKeyUTC: '', agendaAttemptsToday: 0, agendaLastAttemptMs: null };
 }
 
 /**
@@ -143,6 +158,12 @@ const ESTADO_INICIAL = {
   dayKeyUTC: '',
   consecutiveFailures: 0,
   backoffUntilMs: 0,
+  // Contabilidade da busca da agenda. INTERNA: nada disto vai para o cliente
+  // — o que a página mostra quando falta agenda é o `reason: 'no-agenda'` do
+  // snapshot, que já existe. Estes dois campos existem só para a reserva de 10
+  // não evaporar em retentativa; ver `AGENDA_MAX_ATTEMPTS_PER_DAY`.
+  agendaAttemptsToday: 0,
+  agendaLastAttemptMs: null,
 };
 
 /**
@@ -162,6 +183,14 @@ function normalizeState(bruto) {
     dayKeyUTC: typeof s.dayKeyUTC === 'string' ? s.dayKeyUTC : '',
     consecutiveFailures: num(s.consecutiveFailures, 0),
     backoffUntilMs: num(s.backoffUntilMs, 0),
+    agendaAttemptsToday: num(s.agendaAttemptsToday, 0),
+    // Fallback explícito para `null` e não `undefined`, pelo mesmo motivo do
+    // `reason` no envelope: `undefined` some no `JSON.stringify` e volta
+    // indistinguível de campo que nunca existiu.
+    agendaLastAttemptMs: typeof s.agendaLastAttemptMs === 'number'
+      && Number.isFinite(s.agendaLastAttemptMs)
+      ? s.agendaLastAttemptMs
+      : null,
   };
 }
 
@@ -177,10 +206,18 @@ function combinarComMemoria(estadoKV, nowMs) {
   if (memoriaIsolate.dayKeyUTC !== hoje) return estadoKV;
 
   const gastoKV = estadoKV.dayKeyUTC === hoje ? estadoKV.spentToday : 0;
+  const tentativasKV = estadoKV.dayKeyUTC === hoje ? estadoKV.agendaAttemptsToday : 0;
   return {
     ...estadoKV,
     lastFetchAtMs: Math.max(estadoKV.lastFetchAtMs ?? 0, memoriaIsolate.lastFetchAtMs ?? 0) || null,
     spentToday: Math.max(gastoKV, memoriaIsolate.spentToday),
+    // As tentativas de agenda entram na memória pelo mesmo motivo que o gasto:
+    // com o KV recusando escrita, o contador do estado nunca sobe e o teto de
+    // tentativas nunca é atingido — a reserva de 10 iria embora num dia de KV
+    // instável, que é exatamente o dia em que ela mais importa.
+    agendaAttemptsToday: Math.max(tentativasKV, memoriaIsolate.agendaAttemptsToday),
+    agendaLastAttemptMs:
+      Math.max(estadoKV.agendaLastAttemptMs ?? 0, memoriaIsolate.agendaLastAttemptMs ?? 0) || null,
     dayKeyUTC: hoje,
   };
 }
@@ -223,8 +260,35 @@ function ledger(estado, nowMs) {
     ? estado.quotaRemaining
     : Number.POSITIVE_INFINITY;
 
+  // As tentativas de agenda zeram no MESMO discriminador de dia que o gasto —
+  // uma fonte de verdade para "o que já aconteceu hoje". Um segundo critério
+  // de virada seria um segundo orçamento, e é dele que nascem os bugs de
+  // 00:00 UTC que este projeto já viu três vezes.
+  //
+  // Dia DESCONHECIDO não zera, pela mesma razão do teto do header: `''` não é
+  // "outro dia", é "não sei", e um estado ilegível não pode destravar
+  // tentativas ilimitadas.
+  const agendaAttemptsToday = mesmoDia || diaDesconhecido ? estado.agendaAttemptsToday : 0;
+
+  // O HORÁRIO da última tentativa zera JUNTO com o contador, e isto não é
+  // simetria decorativa. MEDIDO: com uma tentativa às 23:50 UTC e o tique das
+  // 00:01 do dia seguinte, o contador zerava e o timestamp não — o
+  // espaçamento de 15 min de ontem bloqueava a agenda de hoje justamente no
+  // instante em que ela deve ser buscada, e o cron ficava em fail-open
+  // gastando cota até as 00:05.
+  //
+  // É o terceiro bug de virada de dia UTC deste projeto, e todos tiveram a
+  // mesma forma: dois campos que descrevem o mesmo fato zerando por critérios
+  // diferentes. Se um dia houver um quarto campo diário, ele zera aqui.
+  const agendaLastAttemptMs = mesmoDia || diaDesconhecido ? estado.agendaLastAttemptMs : null;
+
   // O menor dos dois manda: o header pode mentir alto, a contagem não.
-  return { spentToday, quotaRemaining: Math.min(porHeader, porContagem) };
+  return {
+    spentToday,
+    quotaRemaining: Math.min(porHeader, porContagem),
+    agendaAttemptsToday,
+    agendaLastAttemptMs,
+  };
 }
 
 /**
@@ -325,8 +389,27 @@ async function handleScheduled(event, env) {
   const estadoKV = normalizeState(await readJson(kv, KV_STATE_KEY));
   const estado = combinarComMemoria(estadoKV, nowMs);
   const caixa = ledger(estado, nowMs);
-  const agendaBruta = await readJson(kv, KV_AGENDA_KEY);
-  const agenda = Array.isArray(agendaBruta) ? agendaBruta : null;
+  const hojeUTC = dayKeyUTC(nowMs);
+  // Agenda de OUTRO dia lê como `null`, não como `[]`: ver `parseStoredAgenda`.
+  const agenda = parseStoredAgenda(await kv.get(KV_AGENDA_KEY), hojeUTC);
+
+  // A AGENDA VEM ANTES. Se ela for buscada neste tique, a invocação termina
+  // aqui: duas requisições upstream no mesmo minuto gastariam o dobro por um
+  // dado que só muda uma vez por dia, e o tique seguinte chega em 60s já com a
+  // agenda no lugar.
+  const decisaoAgenda = decideAgendaFetch({
+    nowMs,
+    hasAgendaForToday: agenda !== null,
+    quotaRemaining: caixa.quotaRemaining,
+    attemptsToday: caixa.agendaAttemptsToday,
+    // Do livro-caixa, não do estado cru: é o `ledger` que sabe se virou o dia.
+    lastAttemptAtMs: caixa.agendaLastAttemptMs,
+  });
+
+  if (decisaoAgenda.shouldFetch) {
+    await buscarAgenda(kv, env, estado, caixa, nowMs, hojeUTC);
+    return;
+  }
 
   const leagueIds = activeLeagueIds(
     agenda === null ? null : agenda.map((f) => f.leagueId),
@@ -355,6 +438,7 @@ async function handleScheduled(event, env) {
   // Registrado ANTES da chamada: se a invocação morrer no meio — timeout do
   // runtime, subrequisição pendurada —, a tentativa já está contada.
   memoriaIsolate = {
+    ...memoriaIsolate,
     lastFetchAtMs: nowMs,
     spentToday: caixa.spentToday + 1,
     dayKeyUTC: dayKeyUTC(nowMs),
@@ -430,6 +514,92 @@ async function handleScheduled(event, env) {
     }),
   );
   await kv.put(KV_SNAPSHOT_KEY, JSON.stringify(snapshot));
+}
+
+/**
+ * Busca a agenda do dia e grava. Uma requisição, tirada da reserva de 10.
+ *
+ * ## A tentativa é contada ANTES da chamada
+ *
+ * Mesma disciplina do caminho ao vivo: se a invocação morrer no meio — timeout
+ * do runtime, subrequisição pendurada —, a tentativa já está no livro. Sem
+ * isso o teto de tentativas nunca sobe e a reserva evapora em minutos.
+ *
+ * ## Falha não inventa estado
+ *
+ * Não há `reason` novo, nem campo de erro de agenda no snapshot. Quando a
+ * agenda falta, `decideCronAction` já devolve `reason: 'no-agenda'`, o Worker
+ * segue em fail-open e a página avisa que está buscando às cegas. O que a
+ * falha atualiza é só a contabilidade interna: gasto, tentativa e horário.
+ *
+ * @param {any} kv
+ * @param {typeof ESTADO_INICIAL} estado
+ * @param {any} env
+ * @param {{spentToday: number, quotaRemaining: number, agendaAttemptsToday: number}} caixa
+ * @param {number} nowMs
+ * @param {string} hojeUTC
+ * @returns {Promise<void>}
+ */
+async function buscarAgenda(kv, env, estado, caixa, nowMs, hojeUTC) {
+  if (!env.API_FOOTBALL_KEY) {
+    // Sem secret não há o que buscar, e nenhuma requisição foi gasta. Não
+    // conta tentativa: um problema de configuração não pode consumir o teto
+    // diário e deixar o dia sem agenda depois que a chave for cadastrada.
+    return;
+  }
+
+  const estadoBase = {
+    ...estado,
+    spentToday: caixa.spentToday + 1,
+    quotaRemaining: caixa.quotaRemaining - 1,
+    dayKeyUTC: hojeUTC,
+    agendaAttemptsToday: caixa.agendaAttemptsToday + 1,
+    agendaLastAttemptMs: nowMs,
+  };
+
+  // Contada ANTES da chamada, mesma disciplina do caminho ao vivo, e também na
+  // memória do isolate: se o KV estiver recusando escrita, é ela que segura o
+  // teto de tentativas.
+  memoriaIsolate = {
+    lastFetchAtMs: estado.lastFetchAtMs,
+    spentToday: caixa.spentToday + 1,
+    dayKeyUTC: hojeUTC,
+    agendaAttemptsToday: caixa.agendaAttemptsToday + 1,
+    agendaLastAttemptMs: nowMs,
+  };
+
+  let entries = null;
+  try {
+    const resposta = await fetch(agendaUrl(hojeUTC), {
+      method: 'GET',
+      headers: {
+        'x-apisports-key': env.API_FOOTBALL_KEY,
+        accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+
+    if (resposta.ok) {
+      const { quotaRemaining } = readQuotaHeaders(resposta);
+      if (quotaRemaining !== null) estadoBase.quotaRemaining = quotaRemaining;
+      // `toAgenda` lança em envelope inválido, `errors` preenchido, truncamento
+      // e payload indecifrável. Agenda vazia por dia já encerrado NÃO lança —
+      // é resposta legítima e vira `[]`, que fecha o portão a custo zero.
+      entries = toAgenda(await resposta.json());
+    }
+  } catch {
+    entries = null;
+  }
+
+  // ORDEM: agenda primeiro, estado depois. Se a segunda escrita falhar, sobra
+  // "tenho a agenda de hoje e a tentativa não foi contada" — o portão fecha
+  // sozinho no tique seguinte porque a agenda existe. O inverso deixaria a
+  // tentativa contada sem agenda nenhuma, gastando o teto à toa.
+  if (entries !== null) {
+    await kv.put(KV_AGENDA_KEY, JSON.stringify(buildStoredAgenda(hojeUTC, entries)));
+  }
+
+  await kv.put(KV_STATE_KEY, JSON.stringify(estadoBase));
 }
 
 /**
