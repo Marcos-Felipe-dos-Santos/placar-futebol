@@ -151,6 +151,35 @@ async function readJson(kv, key) {
   }
 }
 
+/**
+ * CAMPOS DO `state` QUE NÃO SÃO DE ESCOPO DIÁRIO, com o motivo de cada um.
+ *
+ * Esta lista é a INVERSA da intuitiva, e a inversão é o ponto. Listar "os
+ * campos que zeram na virada" deixaria um campo novo de fora por omissão — e
+ * omissão é exatamente como os quatro bugs de 00:00 UTC deste projeto
+ * nasceram. Aqui, campo novo que ninguém classificar cai automaticamente no
+ * lado "é diário, tem que zerar no `ledger`", e o teste
+ * `estado-diario.test.js` fica vermelho até alguém decidir conscientemente.
+ *
+ * Fail-closed: o silêncio acusa em vez de passar.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const __CAMPOS_NAO_DIARIOS = Object.freeze({
+  dayKeyUTC: 'É o próprio discriminador. Não zera: é reescrito para o dia novo.',
+  lastFetchAtMs:
+    'Instante absoluto, não contador diário. O intervalo entre buscas atravessa '
+    + 'a meia-noite como qualquer outro par de instantes; zerar aqui faria o cron '
+    + 'buscar duas vezes seguidas às 00:00.',
+  consecutiveFailures:
+    'Escada de backoff, não gasto. Um upstream que está fora do ar às 23:59 '
+    + 'continua fora às 00:01, e zerar reiniciaria a escada no primeiro degrau '
+    + 'justamente quando ela é mais necessária.',
+  backoffUntilMs:
+    'Instante absoluto de quando voltar a tentar. Mesmo motivo de '
+    + '`consecutiveFailures`.',
+});
+
 const ESTADO_INICIAL = {
   lastFetchAtMs: null,
   quotaRemaining: DAILY_QUOTA,
@@ -241,6 +270,20 @@ function combinarComMemoria(estadoKV, nowMs) {
  * @param {number} nowMs
  * @returns {{spentToday: number, quotaRemaining: number}}
  */
+export function __ledger(estado, nowMs) {
+  return ledger(estado, nowMs);
+}
+
+/**
+ * Cópia do estado inicial, para o teste da invariante diária enumerar os
+ * campos sem que ele possa alterá-los.
+ *
+ * @returns {typeof ESTADO_INICIAL}
+ */
+export function __estadoInicial() {
+  return { ...ESTADO_INICIAL };
+}
+
 function ledger(estado, nowMs) {
   const hoje = dayKeyUTC(nowMs);
   const mesmoDia = estado.dayKeyUTC === hoje;

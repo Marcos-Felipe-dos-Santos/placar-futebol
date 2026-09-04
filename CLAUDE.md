@@ -246,6 +246,24 @@ BRT**. Não é por cliente: é a chave inteira.
   escreva", "não chame" ou "não gaste", pergunte de onde virá o diagnóstico do caso suprimido — e a
   resposta vai ser outra fonte, como foi aqui. Não foi erro de redação: foi consequência real de uma
   restrição real, e só apareceu quando alguém tentou implementar.
+- **A INVARIANTE DIÁRIA, e a lição que ela carrega — da mesma família da de cima.** Todo campo do
+  `state` que descreve "o que aconteceu hoje" zera pelo MESMO discriminador de `dayKeyUTC`, no
+  `ledger`. Isto **não é uma regra em prosa: é `test/estado-diario.test.js`**, e é assim porque
+  prosa já falhou aqui — quatro bugs de virada de dia UTC, todos com a forma "dois campos que
+  descrevem o mesmo fato zerando por critérios diferentes", e os três primeiros já tinham a lição
+  registrada em algum lugar quando o quarto nasceu.
+
+  O que generaliza, e vale muito além deste campo: **quando a omissão é o modo de falha, enumere o
+  lado que não deve crescer.** A lista versionada é a dos campos NÃO diários
+  (`__CAMPOS_NAO_DIARIOS` em `worker.js`), com o motivo escrito de cada um — nunca a dos diários.
+  Invertida assim, um campo novo que ninguém classificar cai automaticamente no lado que exige
+  ação e o teste fica vermelho nomeando o campo esquecido. Listar os diários deixaria o campo novo
+  de fora por omissão e o teste passaria, que é exatamente como os quatro entraram.
+
+  **Fail-closed: o silêncio acusa em vez de passar.** É o mesmo princípio de `[]` contra `null` na
+  agenda e de "página correta e vazia é indistinguível de quebrada" — em todos, a ausência de sinal
+  não pode ser lida como "está tudo bem". Se um dia aparecer outra lista neste projeto cuja
+  desatualização seja silenciosa, ela também deve ser escrita pelo complemento.
 - **`intervalMs` não vai no snapshot do KV.** Ele mistura ritmo desejado com freio de cota: com
   `quotaRemaining: 11` vale 3 HORAS e a busca acontece assim mesmo. Cliente que fizesse "fresco até
   `fetchedAtMs + intervalMs`" pintaria verde por três horas — frescor é `isStale`, com régua
