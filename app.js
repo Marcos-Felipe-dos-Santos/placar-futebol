@@ -38,6 +38,7 @@ import { chooseNotice } from './src/core/notice.js';
 import { uncoveredFavorites } from './src/core/leagues.js';
 import { visibleFixtures, leagueChips, sortFixtures } from './src/view/filter.js';
 import { parsePins, prunePins, serializePins } from './src/view/pins.js';
+import { resolveApiUrl } from './src/view/origem.js';
 import {
   noticeTexto,
   resyncTexto,
@@ -55,7 +56,17 @@ import {
  * API-Football é secret do painel do Cloudflare e não passa nem perto do
  * cliente.
  */
-const API_URL = 'https://placar-futebol.SEU-SUBDOMINIO.workers.dev/api/live';
+const API_PADRAO = 'https://placar-futebol.SEU-SUBDOMINIO.workers.dev/api/live';
+
+/**
+ * Origem do dado. `index.html?api=./mock-api.json` aponta para o mock local
+ * gerado por `tools/make-mock.mjs`; a validação — só caminho relativo, nunca
+ * URL absoluta — mora em `view/origem.js`, com teste.
+ */
+const API_URL = resolveApiUrl(
+  typeof location === 'undefined' ? '' : location.search,
+  API_PADRAO,
+);
 
 /**
  * Intervalo do poll ao KV.

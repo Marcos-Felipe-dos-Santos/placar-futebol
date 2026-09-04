@@ -106,9 +106,22 @@ test('PUBLICAÇÃO: a URL do Worker ainda é o placeholder — troque ao publica
   // este teste** — ele terminou o trabalho dele.
   assert.match(
     app,
-    /const API_URL = 'https:\/\/placar-futebol\.SEU-SUBDOMINIO\.workers\.dev\/api\/live'/,
+    /const API_PADRAO = 'https:\/\/placar-futebol\.SEU-SUBDOMINIO\.workers\.dev\/api\/live'/,
     'A URL do Worker mudou. Se você acabou de publicar, apague este teste; ele existia só '
     + 'para o placeholder não passar despercebido.',
+  );
+});
+
+test('o override de origem passa por resolveApiUrl, não por checagem solta', () => {
+  // A validação é lógica e mora em módulo puro com teste próprio
+  // (`test/origem.test.js`), inclusive o caso `//evil.com`, que passa numa
+  // checagem ingênua de "começa com barra". Aqui só se prende que o app.js não
+  // reimplemente a checagem por fora.
+  assert.match(app, /import \{ resolveApiUrl \} from '\.\/src\/view\/origem\.js'/);
+  assert.match(app, /const API_URL = resolveApiUrl\(/);
+  assert.ok(
+    !/location\.search[\s\S]{0,200}startsWith/.test(app),
+    'app.js reimplementou a validação de origem por fora de resolveApiUrl',
   );
 });
 
