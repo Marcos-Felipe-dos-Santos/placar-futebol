@@ -1,0 +1,233 @@
+/*
+ * Estilo da página. Sem build, sem framework, sem fonte remota.
+ *
+ * A decisão visual que importa está na faixa de diagnóstico: ela só aparece
+ * quando há algo a dizer, e quando aparece tem de ser IMPOSSÍVEL DE IGNORAR.
+ * Faixa discreta em página vazia reproduz, em escala menor, o modo de falha
+ * que este projeto combate — a tela correta e silenciosa.
+ */
+
+:root {
+  --fundo: #10141a;
+  --cartao: #1a212b;
+  --borda: #2b3543;
+  --texto: #e6ebf2;
+  --fraco: #93a1b3;
+  --verde: #35c46a;
+  --ambar: #e8a33d;
+  --vermelho: #e2554a;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 1rem;
+  background: var(--fundo);
+  color: var(--texto);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.topo {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.topo h1 { font-size: 1.35rem; margin: 0; }
+
+/* A faixa de idade: verde/âmbar/vermelho pela idade do SNAPSHOT. */
+.idade {
+  font-size: 0.85rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.idade[data-nivel="fresh"] { color: var(--verde); }
+.idade[data-nivel="warn"]  { color: var(--ambar); }
+.idade[data-nivel="stale"] { color: var(--vermelho); }
+
+.som-aviso {
+  font-size: 0.9rem;
+  color: var(--fraco);
+  margin: 0.75rem 0;
+}
+.som-aviso.escondido { display: none; }
+
+/*
+ * A FAIXA. Larga, com barra lateral grossa e contraste alto — quando aparece,
+ * aparece. `erro` e `alerta` são os que não podem passar despercebidos;
+ * `info` é o caso benigno e pode ser mais calmo sem sumir.
+ */
+.faixa {
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  border-radius: 8px;
+  border-left: 6px solid var(--fraco);
+  background: var(--cartao);
+}
+.faixa[data-severidade="erro"]   { border-left-color: var(--vermelho); background: #2a1a1a; }
+.faixa[data-severidade="alerta"] { border-left-color: var(--ambar);    background: #2a2415; }
+.faixa[data-severidade="info"]   { border-left-color: var(--fraco); }
+.faixa-titulo { display: block; font-size: 1.05rem; }
+.faixa-detalhe { margin: 0.35rem 0 0; color: var(--fraco); }
+
+.resync {
+  position: relative;
+  margin: 1rem 0;
+  padding: 0.9rem 2.5rem 0.9rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--ambar);
+  background: #2a2415;
+}
+.resync p { margin: 0.35rem 0 0; color: var(--fraco); }
+.resync-fechar {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.5rem;
+  background: none;
+  border: none;
+  color: var(--fraco);
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--borda);
+  background: var(--cartao);
+  color: var(--texto);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.chip[aria-pressed="true"] { border-color: var(--verde); color: var(--verde); }
+.chip-tudo { border-style: dashed; color: var(--fraco); }
+
+/*
+ * O aviso de cobertura mora AQUI, no chip da liga, e não na faixa: é
+ * propriedade permanente de uma liga, não estado da página. Na faixa
+ * disputaria precedência todo dia com avisos temporais.
+ */
+.chip-sem-cobertura { border-color: var(--ambar); }
+.chip-marca {
+  display: inline-grid;
+  place-items: center;
+  width: 1.1em;
+  height: 1.1em;
+  border-radius: 50%;
+  background: var(--ambar);
+  color: #10141a;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+}
+
+.cartao {
+  position: relative;
+  padding: 0.85rem;
+  border-radius: 10px;
+  border: 1px solid var(--borda);
+  background: var(--cartao);
+}
+.cartao[data-status="finished"],
+.cartao[data-status="cancelled"] { opacity: 0.6; }
+
+.cartao-topo {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--fraco);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.cartao-placar {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto 1fr;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+.time { font-size: 0.95rem; }
+.cartao-placar .time:last-of-type { text-align: right; }
+.gols { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.x { color: var(--fraco); }
+
+.favorita, .favorita-liga {
+  margin-top: 0.6rem;
+  margin-right: 0.4rem;
+  background: none;
+  border: 1px solid var(--borda);
+  border-radius: 6px;
+  color: var(--fraco);
+  font-size: 0.8rem;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+.favorita[aria-pressed="true"] { color: var(--ambar); border-color: var(--ambar); }
+
+/* Gol: pisca uma vez. Reforço visual do som, para quem está com o som mudo. */
+@keyframes gol {
+  from { background: #24503a; }
+  to   { background: var(--cartao); }
+}
+.cartao.gol { animation: gol 1.6s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cartao.gol { animation: none; outline: 2px solid var(--verde); }
+}
+
+.overlay {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  min-width: 220px;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--borda);
+  background: rgba(16, 20, 26, 0.94);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 45%);
+  cursor: grab;
+  touch-action: none;
+  z-index: 10;
+}
+.overlay:active { cursor: grabbing; }
+
+.overlay-linha {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.2rem 0;
+  font-size: 0.9rem;
+}
+.overlay-gols { font-weight: 700; font-variant-numeric: tabular-nums; }
+.overlay-min { color: var(--fraco); font-size: 0.8rem; min-width: 2.5em; text-align: right; }
+
+.rodape {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--borda);
+  font-size: 0.8rem;
+  color: var(--fraco);
+}
+.rodape p { margin: 0.4rem 0; }

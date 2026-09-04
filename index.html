@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Placar ao vivo</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topo">
+  <h1>Placar ao vivo</h1>
+  <!--
+    A idade do dado vem do timestamp do snapshot, NUNCA do minuto da partida:
+    o `elapsed` da API satura em 45 e 90 durante o acréscimo, então um dado
+    fresquíssimo pode ter o minuto parado por seis minutos seguidos.
+  -->
+  <span id="idade" class="idade" data-nivel="stale">sem dados</span>
+</header>
+
+<!--
+  Aviso de autoplay. O navegador bloqueia áudio sem gesto do usuário; enquanto
+  o som não é liberado, `applySnapshot` recebe `soundEnabled: false` e não
+  emite evento nenhum — nada fica pendente, então liberar no minuto 80 não
+  dispara os gols do primeiro tempo.
+-->
+<p id="som-aviso" class="som-aviso">
+  O navegador bloqueia som até você interagir.
+  <button id="som-liberar" type="button">Ativar alerta de gol</button>
+</p>
+
+<!--
+  A FAIXA DE DIAGNÓSTICO. Fica escondida quando não há nada a dizer: faixa
+  permanente vira mobília, e o dia em que ela importa é o dia em que ninguém
+  repara. Uma por vez — a precedência é decidida em `src/core/notice.js`, não
+  aqui e não no CSS.
+-->
+<section id="faixa" class="faixa" role="status" aria-live="polite" hidden></section>
+
+<!--
+  A ressincronização é ELEMENTO SEPARADO da faixa, e não por estética: a faixa
+  descreve o estado atual e é recalculada a cada render; isto é um evento
+  passado, que precisa continuar visível depois de o estado já ter voltado ao
+  normal. Lifetimes diferentes não cabem no mesmo elemento.
+-->
+<section id="resync" class="resync" role="alert" hidden></section>
+
+<!--
+  Filtro por liga. O padrão é o conjunto de interesse; "ver todas" é
+  afrouxamento explícito. O aviso de liga sem cobertura ao vivo garantida mora
+  NO CHIP da liga a que se refere — escopo local não disputa a faixa global.
+-->
+<nav id="chips" class="chips" aria-label="Filtrar por competição"></nav>
+
+<main id="grade" class="grade"></main>
+
+<!-- Overlay flutuante, arrastável. Posição persistida no localStorage. -->
+<aside id="overlay" class="overlay" hidden aria-label="Partidas fixadas">
+  <div id="overlay-corpo"></div>
+</aside>
+
+<footer class="rodape">
+  <p>
+    Dados da API-Football, buscados por um Cloudflare Worker — <strong>esta página nunca
+    fala com a API</strong>. Cota de 100 requisições/dia, global da chave, com reserva de 10
+    para a agenda; cobertura ao vivo de 3–4h/dia e reset às 21:00 (BRT).
+  </p>
+  <p>
+    Latência do alerta de gol: <strong>0–210s, não medida</strong>. Até 150s são o intervalo
+    do nosso cron, verificável no código; até 60s são a consistência eventual do KV, que vem
+    da documentação da Cloudflare e nunca foi exercitada aqui.
+  </p>
+  <p>
+    O minuto pode ficar travado em 45' ou 90' durante o acréscimo. É o que a fonte informa —
+    a página não estima o minuto que não tem.
+  </p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

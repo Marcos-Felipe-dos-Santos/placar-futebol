@@ -353,6 +353,31 @@ faz sentido guardar aqui não é lockfile: é (a) recusar conteúdo staged que c
 chave, e (b) recusar commit que introduza qualquer dependência, que é a restrição do projeto mais
 fácil de violar sem perceber.
 
+## O que do PR 3 ficou SEM teste automatizado
+
+Decisão do dev, e a razão é dura: **nenhuma dependência nova.** Cobertura de DOM exigiria um test
+runner de browser, e a restrição de zero dependências é a premissa que sustenta GitHub Pages, zero
+build e o projeto inteiro. Trocá-la por cobertura de DOM seria vender a tese por um teste.
+
+O que se fez em vez disso: **toda decisão saiu do `app.js`** e virou função pura testada —
+`src/core/notice.js` (precedência da faixa), `src/view/copy.js` (redação) e `src/view/filter.js`
+(filtro, chips, ordenação). O `app.js` ficou burro: lê estado, chama função pura, escreve no DOM.
+
+`test/app-contratos.test.js` cobre o que dá para provar lendo a fonte — ausência de caminho
+proibido. Ele NÃO prova comportamento, e a diferença importa: prova que `diffFixtures` não é
+chamado, não que a tela renderize certo.
+
+**Fica sem verificação automatizada, e precisa de olho humano a cada mudança no `app.js`:**
+
+1. O som tocar de fato depois do gesto de liberação (e **não** tocar antes).
+2. O arrasto do overlay e a persistência da posição entre recarregamentos.
+3. A animação de gol reiniciar em dois gols seguidos na mesma partida.
+4. Layout responsivo e a faixa continuar legível em tela estreita.
+5. CORS de verdade contra o Worker publicado — o teste do Worker usa `Response` sintética.
+
+Se um dia o projeto aceitar uma dependência de teste, é este bloco que ela paga. Enquanto não
+aceitar, **este bloco é o inventário honesto do buraco**, não um TODO a ignorar.
+
 ## Disciplina de teste
 
 Três regras que este projeto aprendeu na prática e que valem mais que cobertura:
