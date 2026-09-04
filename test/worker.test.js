@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import worker, { KV_SNAPSHOT_KEY, KV_STATE_KEY, KV_AGENDA_KEY, __resetIsolateState } from '../worker.js';
 import { buildSnapshot, parseSnapshot } from '../src/core/snapshot.js';
 import { BACKOFF_MAX_MS } from '../src/core/backoff.js';
+import { applySnapshot } from '../src/core/session.js';
 import { makeFixture } from './helpers/fixtures.js';
 import { primeiroTempo, segundoTempo, envelopeVazio } from './helpers/apiFootballSamples.js';
 
@@ -81,7 +82,6 @@ function snapshotGravado(overrides = {}) {
       quotaRemaining: 90,
       discarded: 0,
       upstreamCount: 1,
-      intervalMs: 135_000,
       ...overrides,
     }),
   );
@@ -160,6 +160,124 @@ test('GET /api/live devolve o snapshot do KV', async () => {
   assert.equal(corpo.quotaRemaining, 90, 'a cota é global e vem do snapshot, não do cliente');
 });
 
+/** Dia UTC de agora — o mesmo que o fetch handler calcula de `Date.now()`. */
+function hojeUTC() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+test('a resposta serve o estado do cron: é ele que diz POR QUE o dado é velho', async () => {
+  // O objetivo desde o começo: "acabou a cota" e "quebrou" não podem ser
+  // indistinguíveis. O snapshot não consegue responder isso — só é escrito em
+  // busca bem-sucedida —, então a resposta carrega também a chave `state`,
+  // que é escrita em toda tentativa real. Nenhuma escrita nova, nenhuma
+  // chamada upstream: dado que já existia, agora servido.
+  const kv = fakeKV({
+    [KV_SNAPSHOT_KEY]: snapshotGravado(),
+    [KV_STATE_KEY]: JSON.stringify({
+      consecutiveFailures: 3,
+      backoffUntilMs: T0 + 300_000,
+      quotaRemaining: 41,
+      spentToday: 59,
+      dayKeyUTC: hojeUTC(),
+    }),
+  });
+  const { chamadas, resultado } = await comFetchEspiao(null, () =>
+    worker.fetch(pedido(), env(kv), {}),
+  );
+
+  assert.deepEqual(chamadas, [], 'servir o estado virou chamada upstream');
+  const corpo = await resultado.json();
+  assert.equal(corpo.cron.consecutiveFailures, 3, 'sem isto, quebrado é indistinguível de parado');
+  assert.equal(corpo.cron.backoffUntilMs, T0 + 300_000);
+  assert.equal(corpo.cron.quotaRemaining, 41);
+});
+
+test('o corpo continua sendo superconjunto do Snapshot interno', async () => {
+  // `cron` entra AO LADO dos campos do envelope, nunca envolvendo-o num
+  // `{ snapshot, cron }`. Se envolvesse, `applySnapshot` deixaria de consumir
+  // a resposta direto e o cliente precisaria de código de tradução — a
+  // fronteira vazaria para o PR 3.
+  const kv = fakeKV({ [KV_SNAPSHOT_KEY]: snapshotGravado(), [KV_STATE_KEY]: '{}' });
+  const { resultado } = await comFetchEspiao(null, () => worker.fetch(pedido(), env(kv), {}));
+
+  const corpo = await resultado.json();
+  const r = applySnapshot(null, corpo);
+  assert.equal(r.state.snapshot, corpo, 'applySnapshot não aceitou a resposta sem tradução');
+  assert.equal(corpo.fixtures.length, 1);
+});
+
+test('estado ausente degrada: 200 com o snapshot, cron null, nunca erro', async () => {
+  // Diagnóstico que falha não pode custar o dado. E `null` é obrigatório:
+  // devolver estado saudável inventado — zero falhas, cota cheia — afirmaria
+  // como fato o que não se sabe, que é o erro de confundir agenda [] com
+  // agenda null.
+  const kv = fakeKV({ [KV_SNAPSHOT_KEY]: snapshotGravado() });
+  const { resultado } = await comFetchEspiao(null, () => worker.fetch(pedido(), env(kv), {}));
+
+  assert.equal(resultado.status, 200, 'falta de estado derrubou a resposta');
+  const corpo = await resultado.json();
+  assert.equal(corpo.cron, null);
+  assert.equal(corpo.fixtures.length, 1, 'o dado continua servido');
+});
+
+test('estado ilegível degrada igual, sem derrubar a resposta', async () => {
+  const kv = fakeKV({ [KV_SNAPSHOT_KEY]: snapshotGravado(), [KV_STATE_KEY]: 'não é json {{{' });
+  const { resultado } = await comFetchEspiao(null, () => worker.fetch(pedido(), env(kv), {}));
+
+  assert.equal(resultado.status, 200);
+  assert.equal((await resultado.json()).cron, null);
+});
+
+test('KV que falha SÓ na leitura do estado não derruba a resposta', async () => {
+  // O caso que o teste de "KV fora do ar" não cobre: lá o `get` falha para
+  // tudo e a resposta já é 503 antes de chegar ao estado. Aqui o dado está
+  // são e só o diagnóstico quebrou — e diagnóstico que falha não pode custar
+  // o dado. Sem este teste, tirar o `catch` da segunda leitura passa
+  // despercebido e uma falha parcial de KV apaga a grade inteira.
+  const kv = {
+    async get(key) {
+      if (key === KV_STATE_KEY) throw new Error('KV indisponível');
+      return snapshotGravado();
+    },
+    async put() {},
+  };
+  const { chamadas, resultado } = await comFetchEspiao(null, () =>
+    worker.fetch(pedido(), env(kv), {}),
+  );
+
+  assert.deepEqual(chamadas, [], 'erro ao ler o estado virou busca upstream');
+  assert.equal(resultado.status, 200, 'falha no diagnóstico derrubou o dado');
+  const corpo = await resultado.json();
+  assert.equal(corpo.cron, null);
+  assert.equal(corpo.fixtures.length, 1, 'o snapshot continua servido');
+});
+
+test('cota de ONTEM não é servida como cota de hoje', async () => {
+  // O livro-caixa vale para o dia UTC em que foi escrito, e o cron só escreve
+  // quando busca. Numa noite sem jogo depois do reset das 21:00 BRT, o
+  // `state` fica horas com o gasto de ontem. Servir aquele número faria a
+  // página anunciar "cota esgotada" com as 100 requisições disponíveis.
+  const kv = fakeKV({
+    [KV_SNAPSHOT_KEY]: snapshotGravado(),
+    [KV_STATE_KEY]: JSON.stringify({
+      consecutiveFailures: 4,
+      backoffUntilMs: 0,
+      quotaRemaining: 2,
+      dayKeyUTC: '2020-01-01',
+    }),
+  });
+  const { resultado } = await comFetchEspiao(null, () => worker.fetch(pedido(), env(kv), {}));
+
+  const corpo = await resultado.json();
+  assert.equal(corpo.cron.quotaRemaining, null, 'cota de outro dia UTC vazou como cota de hoje');
+  // Controle positivo, e com valor diferente de zero de propósito: `0` é
+  // também o fallback de campo ausente, então asserir zero aqui passaria
+  // mesmo que a função tivesse descartado o estado inteiro. As falhas NÃO são
+  // zeradas pela virada do dia — não têm nada a ver com o livro-caixa, e
+  // apagá-las esconderia um pipeline quebrado justamente depois do reset.
+  assert.equal(corpo.cron.consecutiveFailures, 4, 'a virada do dia apagou as falhas');
+});
+
 test('sem snapshot ainda, responde 503 e não 200 vazio', async () => {
   // 200 com lista vazia diria "não há jogos", que é mentira quando a verdade
   // é "ainda não busquei nada". Página correta e vazia é o pior modo de
@@ -234,6 +352,39 @@ test('cron: sem jogo de interesse, não chama upstream E não escreve no KV', as
 
   assert.deepEqual(chamadas, [], 'gastou cota sem jogo de interesse');
   assert.deepEqual(kv.puts, [], 'escreveu no KV sem ter buscado');
+});
+
+/** Agenda com jogo ao vivo SÓ numa liga fora da semente (Premier League). */
+function agendaSoLigaNaoSemente() {
+  return JSON.stringify([
+    makeFixture({
+      id: 'ag2',
+      leagueId: '39',
+      leagueName: 'Premier League',
+      kickoffISO: new Date(T0 - 30 * 60_000).toISOString(),
+      status: 'scheduled',
+      homeGoals: null,
+      awayGoals: null,
+    }),
+  ]);
+}
+
+test('cron: o portão é da SEMENTE — favorita de navegador não o abre', async () => {
+  // O portão é global; favoritas moram no localStorage de cada navegador.
+  // Se `activeLeagueIds` fosse chamada com favoritas aqui, qualquer visitante
+  // abriria o portão e gastaria a cota do dono da chave — 100 req/dia para a
+  // chave inteira. O Worker chama com UM argumento de propósito, e é isto que
+  // este teste prende: prosa no doc não impede ninguém de passar o segundo.
+  const kv = fakeKV({ [KV_AGENDA_KEY]: agendaSoLigaNaoSemente() });
+  const { chamadas } = await comFetchEspiao(null, () =>
+    worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  assert.deepEqual(chamadas, [], 'liga fora da semente abriu o portão do cron');
+  assert.deepEqual(kv.puts, [], 'escreveu no KV sem ter buscado');
+  // Controle positivo desta asserção negativa: o teste seguinte usa a MESMA
+  // agenda com `leagueId: '71'` e exige exatamente uma chamada. Sem ele, este
+  // aqui passaria mesmo com o cron quebrado e nunca buscando nada.
 });
 
 test('cron: com jogo de interesse, chama upstream exatamente uma vez', async () => {
@@ -412,6 +563,26 @@ test('agenda ausente no KV faz o cron falhar aberto, não emudecer', async () =>
     () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
   );
   assert.equal(chamadas.length, 1);
+
+  // E o snapshot tem de DIZER que buscou às cegas. Sem isto a página mostra
+  // uma grade curta sem explicação, que é "correta e vazia" — o modo de falha
+  // que este projeto mais combate. Literal de propósito: a constante não pode
+  // servir de régua para ela mesma.
+  const s = parseSnapshot(kv.store.get(KV_SNAPSHOT_KEY));
+  assert.equal(s.reason, 'no-agenda', 'o snapshot não registrou que faltava agenda');
+});
+
+test('com agenda, o snapshot registra busca normal — não "às cegas"', async () => {
+  // Controle positivo do teste acima: se `reason` estivesse preso em
+  // 'no-agenda', a página avisaria cobertura reduzida todo santo dia e o
+  // aviso viraria ruído que ninguém lê.
+  const kv = fakeKV({ [KV_AGENDA_KEY]: agendaComJogo() });
+  await comFetchEspiao(
+    async () => respostaUpstream(envelope([primeiroTempo])),
+    () => worker.scheduled({ scheduledTime: T0 }, env(kv), {}),
+  );
+
+  assert.equal(parseSnapshot(kv.store.get(KV_SNAPSHOT_KEY)).reason, 'due');
 });
 
 // === o livro-caixa da cota ==================================================

@@ -197,7 +197,7 @@ test('agenda AUSENTE falha aberto, com motivo declarado', () => {
   // orçamento de cota; o silêncio é que não pode existir.
   const d = decideCronAction(estado({ agenda: null }));
   assert.equal(d.shouldFetch, true);
-  assert.equal(d.reason, 'no-agenda-fail-open');
+  assert.equal(d.reason, 'no-agenda');
 });
 
 test('agenda vazia continua fechando o portão', () => {

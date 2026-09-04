@@ -131,9 +131,79 @@ BRT**. Não é por cliente: é a chave inteira.
   API.
 - **O portão do cron vem da AGENDA, nunca do `live=all`.** Perguntar ao `live=all` se vale a pena
   chamar `live=all` já gastou a requisição. O portão abre quando há jogo ao vivo numa liga do
-  conjunto efetivo — `activeLeagueIds(agendaDeHoje, favoritas)` em `src/core/leagues.js` —, que é a
-  interseção da semente de ligas com o que a agenda diz ter jogo hoje. Numa terça sem jogo
-  brasileiro isso custa **zero requisições**, mesmo com centenas de partidas ao vivo no mundo.
+  conjunto efetivo — `activeLeagueIds(agendaDeHoje)` em `src/core/leagues.js` —, que é a interseção
+  da SEMENTE de ligas com o que a agenda diz ter jogo hoje. Numa terça sem jogo brasileiro isso
+  custa **zero requisições**, mesmo com centenas de partidas ao vivo no mundo.
+- **Favorita NÃO entra no portão, e o Worker chama com um argumento de propósito.** Uma versão
+  anterior deste arquivo dizia `activeLeagueIds(agendaDeHoje, favoritas)` no portão; estava errada,
+  e foi este arquivo que mudou, não o código. Favoritas moram no `localStorage` de cada navegador e
+  o portão é global: levá-las ao Worker exigiria estado por usuário no KV e deixaria qualquer
+  visitante abrir o portão e gastar a cota do dono da chave — uma chave só, 100 req/dia.
+  Desproporcional para uso pessoal, perigoso num portfólio público. O segundo argumento existe e é
+  legítimo, mas **só o filtro da UI o passa**. Prende isso o teste
+  "cron: o portão é da SEMENTE" em `test/worker.test.js`.
+- **Dois avisos que o PR 3 TEM de renderizar.** São os dois casos conhecidos de "correta e vazia",
+  o modo de falha que este projeto mais combate, e por isso ficam juntos:
+  1. **Favorita sem cobertura.** Liga favoritada fora da semente não tem cobertura ao vivo
+     garantida — pode vir de carona numa busca disparada pelo Brasileirão, mas nada nela causa uma
+     busca. Gancho: `uncoveredFavorites` em `src/core/leagues.js`.
+  2. **Busca às cegas.** `snapshot.reason === 'no-agenda'` significa que o cron buscou sem a agenda
+     do dia, com cobertura reduzida. A página diz isso; não mostra uma grade curta calada.
+  3. **Por que o dado está parado.** Quando `isStale` acusa, a explicação sai do campo **`cron`**,
+     **não** do `reason` do snapshot: `consecutiveFailures > 0` é "quebrou", `quotaRemaining` no fim
+     é "acabou a cota" (com `quotaResetAtMs` para dizer a que horas volta), e nenhum dos dois é
+     "não havia jogo agora" — e aí a grade vazia está CERTA e a página pode dizer isso.
+     `cron === null` é "não sei", que também se diz, e nunca se pinta de verde.
+
+  Em nenhum dos três o gancho é prosa: são campo e função, com teste.
+- **Duas perguntas, duas chaves, duas fontes na resposta.** `GET /api/live` serve o snapshot **e**
+  o estado do cron, no campo `cron`. `snapshot.fetchedAtMs` responde *"o dado é novo?"*;
+  `cron` responde *"por que não é?"*. Isso **não** viola "nada de heartbeat": o `state` já é escrito
+  em toda tentativa real, inclusive fracassada — não há escrita nova, só um dado que existia e não
+  era servido. Duas leituras de KV, zero chamadas upstream.
+
+  Exposto: `consecutiveFailures` (quebrou), `backoffUntilMs` (quando volta a tentar) e
+  `quotaRemaining` (acabou a cota; o horário do reset vem de `quotaResetAtMs` do snapshot). Os três
+  separam os três casos parados. **`spentToday` e `lastFetchAtMs` ficaram de fora de propósito** —
+  não distinguem nenhum caso e nada os renderiza; campo que ninguém lê vira o próximo `intervalMs`.
+
+  `cron` é `null` quando não há estado legível, e **`null` é obrigatório**: devolver estado saudável
+  inventado afirmaria como fato o que não se sabe. Falha ao ler o `state` **nunca** derruba a
+  resposta — diagnóstico que quebra não pode custar o dado.
+
+  `cron` entra **ao lado** dos campos do envelope, nunca envolvendo-o num `{ snapshot, cron }`: o
+  corpo tem de continuar sendo superconjunto do `Snapshot` interno, senão `applySnapshot` para de
+  consumi-lo direto. Há teste.
+- **`reason` VAI no snapshot; `intervalMs` não.** São decisões opostas e o critério é o mesmo:
+  o campo desfaz uma ambiguidade que mata o produto em silêncio, ou cria uma?
+
+  `reason` diz por que a busca que gerou ESTE snapshot aconteceu — `'due'` ou `'no-agenda'`. Só
+  esses dois chegam ao envelope, porque `buildSnapshot` só roda sob `shouldFetch: true`. **Não é ele
+  que explica um snapshot parado**; isso é o `cron` do bullet acima.
+
+  O nome deixou de ser `no-agenda-fail-open`: "fail-open" é jargão de quem escreveu o portão, e este
+  valor vira texto na tela. Os outros quatro (`no-live-match`, `too-soon`, `backoff`,
+  `quota-exhausted`) são diagnóstico interno, nunca aparecem em snapshot e por isso não foram
+  renomeados pensando no leitor da página.
+
+  **REGISTRO DE UMA INSTRUÇÃO IMPOSSÍVEL — vale mais que a correção.** A versão anterior deste
+  arquivo mandava o PR 3 *"renderizar `reason` quando o snapshot estiver parado"*. Não dava para
+  cumprir, e o motivo é que **"nada de heartbeat" — regra deste mesmo arquivo — garante que o
+  snapshot não seja escrito exatamente nos tiques em que o cron decide não buscar.** O snapshot
+  parado carrega o motivo da última busca *bem-sucedida*; o motivo de ter parado nunca chega nele. A
+  restrição e a instrução vinham do mesmo lugar e se contradiziam.
+
+  O que isso ensina, e por isso está escrito aqui: **uma regra de economia (não escreva) apaga a
+  observabilidade do caminho que ela suprime.** Toda vez que uma regra deste projeto disser "não
+  escreva", "não chame" ou "não gaste", pergunte de onde virá o diagnóstico do caso suprimido — e a
+  resposta vai ser outra fonte, como foi aqui. Não foi erro de redação: foi consequência real de uma
+  restrição real, e só apareceu quando alguém tentou implementar.
+- **`intervalMs` não vai no snapshot do KV.** Ele mistura ritmo desejado com freio de cota: com
+  `quotaRemaining: 11` vale 3 HORAS e a busca acontece assim mesmo. Cliente que fizesse "fresco até
+  `fetchedAtMs + intervalMs`" pintaria verde por três horas — frescor é `isStale`, com régua
+  própria. O campo foi removido do envelope justamente porque prosa num typedef não impede ninguém
+  de ler o número; há teste exigindo que não volte. Se o PR 3 precisar exibir o ritmo, isso é
+  conversa com o dev, não um campo a reintroduzir.
 - **`hasLiveFavorite` é pré-condição de portão, não modificador de ritmo.** Quando é `false`, o cron
   não busca. Tratá-lo como "buscar mais devagar" faz os jogos de domingo de manhã consumirem a
   janela e deixarem a noite descoberta.
@@ -181,6 +251,13 @@ suspeitar, audite os commits, não a árvore de trabalho.
 
 Regra prática: espere a bateria imprimir a linha `total: N mutantes, M sobreviventes` antes de
 qualquer comando que leia o disco para o índice do git.
+
+**DÍVIDA ANOTADA — se a bateria virar `tools/` versionada, a lista de mutantes vai para JSON e ela
+ganha teste próprio.** Não fazer agora. O motivo: hoje a lista de sabotagens vive embutida no script
+do scratchpad, então ninguém revisa o que ela testa e ninguém percebe quando um mutante para de ser
+representativo. Versionada, a lista em JSON fica revisável no diff, e o teste próprio responde a
+pergunta que a bateria não responde sobre si mesma — se ela ainda sabe detectar um mutante que
+deveria matar, ou se está verde porque parou de rodar.
 
 **Não há pre-commit hook neste projeto, e não há lockfile.** O projeto tem `dependencies: {}` e
 `devDependencies: {}` por restrição dura — nada a travar. Se um hook for adicionado depois, o que

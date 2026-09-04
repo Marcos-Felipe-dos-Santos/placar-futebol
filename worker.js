@@ -38,7 +38,7 @@ import { toFixturesWithReport } from './src/adapters/apiFootball.js';
 import { decideCronAction } from './src/core/gate.js';
 import { activeLeagueIds } from './src/core/leagues.js';
 import { nextBackoffMs } from './src/core/backoff.js';
-import { buildSnapshot, parseSnapshot } from './src/core/snapshot.js';
+import { buildSnapshot, parseSnapshot, toPublicCronState } from './src/core/snapshot.js';
 import { checkRateLimit, routeRequest } from './src/worker/http.js';
 
 export const KV_SNAPSHOT_KEY = 'snapshot';
@@ -290,7 +290,25 @@ async function handleFetch(request, env) {
     return json({ error: 'sem snapshot ainda' }, 503, { 'retry-after': '60' });
   }
 
-  return json(snapshot, 200);
+  // SEGUNDA CHAVE, NENHUMA CHAMADA UPSTREAM. `snapshot.fetchedAtMs` diz se o
+  // dado é novo; o `state` diz por que não é. O snapshot sozinho não consegue
+  // responder isso: ele só é escrito em busca bem-sucedida, então nos tiques
+  // em que o cron desiste não há nada nele para contar a história.
+  //
+  // Falha aqui NÃO derruba a resposta: sem o estado, a página degrada para o
+  // que já fazia — mostrar o snapshot com o indicador de staleness. Um erro
+  // de diagnóstico não pode custar o dado.
+  let cron = null;
+  try {
+    cron = toPublicCronState(await env.PLACAR_KV.get(KV_STATE_KEY), dayKeyUTC(Date.now()));
+  } catch {
+    cron = null;
+  }
+
+  // Campo NOVO, ao lado do envelope — nunca `{ snapshot, cron }`. O corpo
+  // continua sendo superconjunto do `Snapshot` do modelo interno, que é o que
+  // deixa `applySnapshot` consumi-lo sem tradução. Há teste guardando isso.
+  return json({ ...snapshot, cron }, 200);
 }
 
 /**
@@ -387,7 +405,12 @@ async function handleScheduled(event, env) {
     discarded: relatorio.discarded,
     upstreamCount: relatorio.fixtures.length + relatorio.discarded,
     truncated: relatorio.truncated,
-    intervalMs: decisao.intervalMs,
+    // `decisao.reason` entra: é o que deixa a página dizer que está buscando
+    // sem agenda, em vez de mostrar uma grade curta sem explicação.
+    reason: decisao.reason,
+    // `decisao.intervalMs` NÃO entra aqui: é interno ao portão (ver
+    // `core/gate.js`). Cliente que o lesse pintaria verde por 3h com a cota
+    // no fim.
   });
 
   // ORDEM DELIBERADA: `state` primeiro. As duas escritas não são atômicas, e

@@ -62,10 +62,45 @@ export function hasMatchInProgress(agenda, nowMs, leagueIds, options = {}) {
 /**
  * @typedef  {object} CronDecision
  * @property {boolean} shouldFetch
- * @property {'due'|'no-live-match'|'too-soon'|'backoff'|'quota-exhausted'|'no-agenda-fail-open'} reason
- *   Por que buscou ou não. Vai para o snapshot: sem isto, "o cron não gastou
- *   cota hoje" é indistinguível de "o cron está quebrado".
- * @property {number} intervalMs  Intervalo upstream em uso agora.
+ * @property {'due'|'no-agenda'|'no-live-match'|'too-soon'|'backoff'|'quota-exhausted'} reason
+ *   Por que buscou ou não.
+ *
+ *   **Só os dois primeiros chegam ao snapshot, e é estrutural.**
+ *   `buildSnapshot` só roda sob `shouldFetch: true`, e os quatro motivos de
+ *   NÃO buscar são exatamente os tiques em que o cron não escreve nada no KV
+ *   (nada de heartbeat — ver `worker.js`). Então:
+ *
+ *   - `'due'` — busca normal, agenda conhecida. A página não precisa dizer
+ *     nada.
+ *   - `'no-agenda'` — buscou SEM a agenda do dia, porque falhar fechado
+ *     apagaria a página o dia inteiro. Este é o que a UI do PR 3 renderiza:
+ *     "sem a agenda do dia, buscando às cegas" — cobertura reduzida, não
+ *     página vazia sem explicação. O nome era `no-agenda-fail-open`;
+ *     "fail-open" é jargão de quem escreveu o portão, não de quem lê a
+ *     página.
+ *   - `'no-live-match'`, `'too-soon'`, `'backoff'`, `'quota-exhausted'` —
+ *     diagnóstico interno, para quem lê ESTA decisão. Nunca aparecem em
+ *     snapshot nenhum, então não foram renomeados pensando na tela.
+ *
+ *   **O que este campo NÃO responde:** por que o snapshot está parado. Um
+ *   snapshot velho carrega o motivo da última busca BEM-SUCEDIDA, não o
+ *   motivo de ter parado. Distinguir "acabou a cota" de "quebrou" precisa da
+ *   chave `state` do KV, que não é servida ao cliente hoje.
+ * @property {number} intervalMs
+ *   Intervalo upstream em uso agora. **Interno ao portão: NÃO exportar ao
+ *   cliente.**
+ *
+ *   Ele codifica duas coisas no mesmo número — o ritmo desejado e o freio da
+ *   cota. Com `quotaRemaining: 11` este intervalo vale 3 HORAS, e a busca
+ *   acontece assim mesmo, porque `hasUsableQuota(11)` é `true`. Um cliente
+ *   que recebesse o número e fizesse "considere fresco até
+ *   `fetchedAtMs + intervalMs`" pintaria verde por três horas.
+ *
+ *   Para frescor existe `isStale`, com `FRESH_MAX_MS` próprio. Foi a mesma
+ *   confusão — "a cota acabou" contra "o reset está perto" no mesmo número —
+ *   que furou a reserva da agenda no portão do cron. Por isso o campo saiu do
+ *   envelope do KV: prosa num typedef não impede ninguém de ler o número, um
+ *   campo ausente impede.
  */
 
 /**
@@ -117,12 +152,13 @@ export function decideCronAction(input, options = {}) {
   // `[]` significa "consultei e não há jogo": portão fecha, custo zero.
   // `null` significa "não tenho a agenda" — e fechar aí deixaria o Worker sem
   // nunca buscar, com a página correta e vazia, que é indistinguível de
-  // quebrada. Falha aberto, com o motivo no snapshot.
+  // quebrada. Falha aberto, e o motivo (`'no-agenda'`) vai no snapshot para a
+  // página poder dizer que está buscando às cegas.
   if (!agendaDesconhecida && !hasMatchInProgress(agenda, nowMs, leagueIds, options)) {
     return { shouldFetch: false, reason: 'no-live-match', intervalMs };
   }
 
-  const motivo = agendaDesconhecida ? 'no-agenda-fail-open' : 'due';
+  const motivo = agendaDesconhecida ? 'no-agenda' : 'due';
 
   // A cota é perguntada, não inferida do intervalo. Inferir conflava "a cota
   // acabou" com "o reset está perto", e deixava um gap longo desde a última

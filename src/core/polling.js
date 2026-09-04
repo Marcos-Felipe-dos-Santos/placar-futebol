@@ -102,10 +102,17 @@ function finiteOrZero(value) {
  *   há partida ao vivo de interesse.
  *
  *   "De interesse" tem definição precisa e ela mora em `core/leagues.js`:
- *   partida ao vivo em `DEFAULT_LEAGUE_IDS` ou em liga favoritada pelo
- *   usuário — não qualquer uma das 1237 ligas que `live=all` devolve. Numa
- *   terça sem jogo brasileiro isso é `false` o dia todo e o custo é zero,
- *   mesmo com centenas de partidas ao vivo no mundo.
+ *   partida ao vivo numa liga de `activeLeagueIds(agendaDeHoje)` — a SEMENTE
+ *   `DEFAULT_LEAGUE_IDS` cruzada com a agenda, não qualquer uma das 1237
+ *   ligas que `live=all` devolve. Numa terça sem jogo brasileiro isso é
+ *   `false` o dia todo e o custo é zero, mesmo com centenas de partidas ao
+ *   vivo no mundo.
+ *
+ *   FAVORITA NÃO ENTRA AQUI. O portão é global e as favoritas moram no
+ *   `localStorage` de cada navegador; incluí-las deixaria qualquer visitante
+ *   gastar a cota do dono da chave. Favorita fora da semente vale só para o
+ *   filtro da UI, e a falta de cobertura tem de ser exibida — ver
+ *   `uncoveredFavorites` em `core/leagues.js`.
  * @param {object} [options]
  * @param {number} [options.reserve=AGENDA_RESERVE]
  * @param {number} [options.activeMs=ACTIVE_INTERVAL_MS]
