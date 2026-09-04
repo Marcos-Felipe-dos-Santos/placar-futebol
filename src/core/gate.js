@@ -33,8 +33,22 @@ export const MATCH_WINDOW_MS = 3 * 60 * 60 * 1000;
 /**
  * Há partida de interesse provavelmente em andamento?
  *
- * @param {ReadonlyArray<import('./types.js').Fixture>} agenda
+ * @param {ReadonlyArray<import('./types.js').AgendaEntry>} agenda
  *   Partidas do dia, como a agenda as devolve.
+ *
+ *   `AgendaEntry` e não `Fixture`: esta função lê `leagueId` e `kickoffISO`, e
+ *   nada mais. Pedir `Fixture` obrigaria a chave `agenda` do KV a guardar
+ *   placar, nome de time e logo que ninguém aqui consulta — 421 KB contra
+ *   26,6 KB, medido. Uma `Fixture` continua servindo, porque tem os dois
+ *   campos; o contrato é que o mínimo basta.
+ *
+ *   ATENÇÃO ao que esta função NÃO sabe: ela abre pela janela de kickoff, não
+ *   por status. Partida que já terminou dentro da janela de 3h ainda conta
+ *   como em andamento. O adaptador da agenda derruba as que já estavam
+ *   encerradas na hora da captura, o que ESTREITA o vazamento sem fechá-lo —
+ *   uma partida que termina depois da captura permanece. Fechar exigiria
+ *   status no momento do portão, e é justamente isso que custaria outra
+ *   requisição.
  * @param {number} nowMs
  * @param {ReadonlySet<string>} leagueIds
  *   Ligas de interesse — normalmente `activeLeagueIds(...)` de `leagues.js`.

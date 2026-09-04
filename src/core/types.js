@@ -54,6 +54,30 @@
  */
 
 /**
+ * UMA LINHA DA AGENDA DO DIA — o mínimo para o portão do cron decidir.
+ *
+ * Não é uma `Fixture` reduzida: é outro tipo, com outro propósito. A agenda
+ * responde uma pergunta só — "há jogo de interesse hoje, e a que horas?" — e
+ * o portão lê exatamente estes dois campos. Guardar `Fixture` inteira aqui
+ * seria carregar nome de time, placar, logo e estádio numa chave do KV que
+ * nada disso alimenta: MEDIDO na captura de 2026-09-04, 421 KB de payload cru
+ * contra 26,6 KB reduzido, para as mesmas 454 partidas.
+ *
+ * Placar e status NÃO entram de propósito. A agenda é buscada uma vez por
+ * dia; qualquer placar dela nasce velho, e um segundo lugar com placar seria
+ * um segundo lugar de onde a UI poderia lê-lo errado. Placar vem do snapshot,
+ * e só dele.
+ *
+ * @typedef  {object} AgendaEntry
+ * @property {string} leagueId
+ *   Id da liga, string — mesma convenção de `Fixture.leagueId`, para cruzar
+ *   com `activeLeagueIds` sem comparar número com string.
+ * @property {string} kickoffISO
+ *   Início programado, ISO 8601 verbatim do provedor. É o que
+ *   `hasMatchInProgress` compara com o relógio.
+ */
+
+/**
  * Uma leitura completa do estado ao vivo, num instante.
  *
  * O snapshot é a unidade que o Worker grava no KV e que o cliente compara.

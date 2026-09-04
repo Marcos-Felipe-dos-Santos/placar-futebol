@@ -16,6 +16,7 @@ settings.local.json.bak
 live-sample.json
 leagues-sample.json
 live-pico.json
+agenda-sample.json
 
 # Dependências (o projeto não usa build, mas ferramentas locais podem criar)
 node_modules/

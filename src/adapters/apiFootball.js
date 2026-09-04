@@ -24,6 +24,30 @@
  *   gol fantasma no apito inicial.
  * - `fixture.status.short` apareceu só como `1H` e `2H`.
  *
+ * ## O que a captura de 2026-09-04 acrescentou
+ *
+ * Duas capturas novas, e a segunda é de outro endpoint:
+ *
+ * - `live-pico.json` — `GET /fixtures?live=all` em horário de pico, 89
+ *   partidas ao vivo em 63 ligas. Trouxe `HT` (10 ocorrências) e exercitou o
+ *   gatilho de reversão do truncamento, que NÃO disparou.
+ * - `agenda-sample.json` — `GET /fixtures?date=2026-09-04`, 454 partidas do
+ *   dia em 209 ligas. Trouxe `NS`, `FT`, `PST` e `PEN`.
+ *
+ * **OS DOIS ENDPOINTS TÊM O MESMO SHAPE — isto é medido, não suposto.** A
+ * união dos caminhos de campo das 454 partidas da agenda é idêntica à das 89
+ * de `live=all`, com **uma** diferença: `events` está presente nas 89 ao vivo
+ * e ausente nas 454 da agenda. O adaptador nunca lê `events`, então
+ * `toFixture` serve os dois sem ramo condicional, e o envelope é validado
+ * pelo mesmo `validarEnvelope`. **Um adaptador, dois pontos de entrada** —
+ * `toFixturesWithReport` para o ao vivo e `toAgendaWithReport` para a agenda,
+ * que diferem no formato de SAÍDA, não no de entrada.
+ *
+ * A agenda também trouxe a primeira evidência de `goals` nulo: 256 das 454
+ * partidas vêm com `goals.home` e `goals.away` em `null` (as `NS` e as `PST`,
+ * que não começaram). Até aqui o tratamento de `null` em `toGoals` era
+ * defensivo sem observação nenhuma por trás.
+ *
  * ## `status.elapsed` satura, e `status.extra` existe
  *
  * MEDIDO na captura: `elapsed` trava em 45 no primeiro tempo com acréscimo
@@ -56,12 +80,26 @@
 /**
  * `fixture.status.short` → status do modelo interno.
  *
- * Marcação de evidência:
- * - ✅ **verificado contra a captura**: `1H`, `2H`. São os únicos que
- *   aparecem nas 19 partidas.
- * - 📄 **da documentação, sem exemplo real**: todos os demais. Um segundo
- *   snapshot noturno deve trazer `HT` e `FT`; até lá, esses mapeamentos são
- *   inferência e não medição.
+ * Marcação de evidência, e **de qual captura veio cada uma** — porque a
+ * força difere: um status visto em `live=all` foi observado no caminho que
+ * dispara alerta de gol; um visto só em `date=` foi observado no caminho da
+ * agenda, que não alimenta o diff.
+ *
+ * - ✅ `live=all` — `1H`, `2H` (live-sample, 19 partidas, 2026-09-03) e `HT`
+ *   (live-pico, 89 partidas em horário de pico, 2026-09-04: 43 `1H`, 36 `2H`,
+ *   10 `HT`). Os três têm recorte verbatim de `live=all` no helper de testes
+ *   — `picoIntervalo` é o do `HT` —, e `S2c` exige que seja assim: creditar
+ *   ao caminho ao vivo uma evidência colhida na agenda seria exatamente o
+ *   erro que esta seção existe para não cometer.
+ * - ✅ `date=` — `NS` (237), `FT` (108), `PST` (19) e `PEN` (1), da captura de
+ *   454 partidas de 2026-09-04.
+ * - 📄 **da documentação, sem exemplo real**: `TBD`, `ET`, `P`, `LIVE`,
+ *   `SUSP`, `INT`, `BT`, `AET`, `ABD`, `AWD`, `WO`, `CANC`. Continuam
+ *   inferência, não medição.
+ *
+ * `PEN` apareceu uma vez só, num sub-20 mexicano com `elapsed: 120`. Uma
+ * ocorrência confirma que o código existe e chega no shape esperado; não
+ * confirma como ele se comporta ao vivo, porque veio da agenda.
  *
  * Escolhas que merecem revisão do dev:
  *
@@ -91,24 +129,26 @@
  * @type {Readonly<Record<string, import('../core/types.js').FixtureStatus>>}
  */
 export const STATUS_MAP = Object.freeze({
-  // ✅ verificados contra live-sample.json
+  // ✅ medidos em live=all (live-sample.json / live-pico.json)
   '1H': 'live',
   '2H': 'live',
+  HT: 'halftime',
 
-  // 📄 documentação, sem exemplo real na captura
-  TBD: 'scheduled',
+  // ✅ medidos em date= (agenda-sample.json)
   NS: 'scheduled',
+  FT: 'finished',
+  PST: 'cancelled',
+  PEN: 'finished',
+
+  // 📄 documentação, sem exemplo real em captura nenhuma
+  TBD: 'scheduled',
   ET: 'live',
   P: 'live',
   LIVE: 'live',
   SUSP: 'live',
   INT: 'live',
-  HT: 'halftime',
   BT: 'halftime',
-  FT: 'finished',
   AET: 'finished',
-  PEN: 'finished',
-  PST: 'cancelled',
   CANC: 'cancelled',
   ABD: 'cancelled',
   AWD: 'cancelled',
@@ -131,6 +171,11 @@ const UNKNOWN_STATUS = 'scheduled';
  * criaria o gol fantasma no apito inicial: o núcleo veria `null → 0` como
  * placar estável e depois `0 → 1` como gol, ou pior, veria `0` onde não há
  * informação nenhuma.
+ *
+ * MEDIDO desde 2026-09-04, e antes disso não era: 256 das 454 partidas da
+ * captura da agenda trazem `goals.home` e `goals.away` em `null` — todas as
+ * que ainda não começaram. É exatamente o caso que este tratamento existe
+ * para cobrir, e ele deixou de ser hipótese.
  *
  * @param {unknown} value
  * @returns {number|null}
@@ -262,19 +307,21 @@ function toFixture(raw) {
  */
 
 /**
- * Converte uma resposta crua da API-Football em partidas do modelo interno,
- * com relatório do que se perdeu.
+ * Valida o envelope e devolve-o. Compartilhado pelos DOIS endpoints.
  *
- * @param {unknown} rawResponse  Corpo JSON já parseado de `/fixtures?live=all`.
- * @returns {ToFixturesReport}
+ * `live=all` e `date=YYYY-MM-DD` têm o mesmo envelope e o mesmo shape de
+ * item — MEDIDO, ver o cabeçalho do módulo —, então as mesmas recusas valem
+ * para os dois: envelope que não é objeto, `errors` preenchido com HTTP 200,
+ * `response` que não é array, e truncamento.
+ *
+ * Lançar é deliberado: devolver `[]` faria o Worker gravar por cima de um
+ * dado bom, e a página ficaria correta e vazia — indistinguível de quebrada.
+ *
+ * @param {unknown} rawResponse
+ * @returns {any} O envelope, já validado.
  * @throws {Error}
- *   Se o envelope não for o esperado, se `errors` vier preenchido, se a
- *   resposta estiver truncada, ou se nenhuma das partidas for utilizável.
- *   Lançar é deliberado: devolver `[]` faria o Worker gravar um snapshot
- *   vazio por cima de um bom, e a página ficaria correta e vazia —
- *   indistinguível de quebrada.
  */
-export function toFixturesWithReport(rawResponse) {
+function validarEnvelope(rawResponse) {
   if (rawResponse == null || typeof rawResponse !== 'object' || Array.isArray(rawResponse)) {
     throw new Error('api-football: resposta não é um envelope de objeto');
   }
@@ -301,20 +348,24 @@ export function toFixturesWithReport(rawResponse) {
   // `paging: {current:1, total:1}` e `results` igual ao tamanho, então este
   // caminho não dispara com o que já foi observado.
   //
-  // RISCO ASSUMIDO: 19 resultados com `total: 1` é compatível com qualquer
-  // tamanho de página >= 19. Não dá para concluir da captura que `live=all`
-  // nunca pagina. Se paginar num volume que ainda não observamos, este
-  // adaptador passa a lançar sempre e o produto para de atualizar.
+  // O GATILHO DE REVERSÃO FOI EXERCITADO E NÃO DISPAROU. A medição em horário
+  // de pico (live-pico.json, 2026-09-04, 89 partidas ao vivo em 63 ligas)
+  // trouxe `paging: {current: 1, total: 1}` e `results: 89` igual a
+  // `response.length`. A agenda do mesmo dia, com 454 partidas, também veio em
+  // página única. **A decisão de lançar fica.**
   //
-  // GATILHO DE REVERSÃO, explícito: **se a medição em horário de pico
-  // (sábado, ~16:00 UTC) mostrar paginação real em `live=all` — `paging.total`
-  // maior que 1 ou `results` maior que `response.length` —, esta decisão se
-  // inverte.** Nesse caso: não lançar, devolver as partidas da página
-  // recebida e marcar `truncated: true` no relatório, deixando o Worker e a
-  // UI tratarem a perda como sinal visível. É por isso que o campo existe.
+  // O QUE A EVIDÊNCIA PASSOU A DIZER: a página é **>= 454**, não mais ">= 19".
+  // Continua sendo um piso, não uma garantia — nenhuma captura prova que a API
+  // nunca pagina, só que não paginou em 454.
   //
-  // Até essa medição, lançar é o certo: perder partida em silêncio é pior que
-  // parar alto, e parar alto preserva o último snapshot bom.
+  // GATILHO, que segue valendo para volumes maiores: **se alguma captura
+  // mostrar `paging.total` maior que 1 ou `results` maior que
+  // `response.length`, esta decisão se inverte** — não lançar, devolver as
+  // partidas da página recebida e marcar `truncated: true`, deixando o Worker
+  // e a UI tratarem a perda como sinal visível. É por isso que o campo existe.
+  //
+  // Até lá, lançar é o certo: perder partida em silêncio é pior que parar
+  // alto, e parar alto preserva o último snapshot bom.
   const total = envelope.paging?.total;
   if (typeof total === 'number' && total > 1) {
     throw new Error(`api-football: resposta truncada, paging.total = ${total}`);
@@ -324,6 +375,22 @@ export function toFixturesWithReport(rawResponse) {
       `api-football: resposta truncada, results = ${envelope.results} e response tem ${envelope.response.length}`,
     );
   }
+
+  return envelope;
+}
+
+/**
+ * Converte uma resposta crua da API-Football em partidas do modelo interno,
+ * com relatório do que se perdeu.
+ *
+ * @param {unknown} rawResponse  Corpo JSON já parseado de `/fixtures?live=all`.
+ * @returns {ToFixturesReport}
+ * @throws {Error}
+ *   Nas condições de `validarEnvelope`, ou se nenhuma das partidas for
+ *   utilizável.
+ */
+export function toFixturesWithReport(rawResponse) {
+  const envelope = validarEnvelope(rawResponse);
 
   /** @type {import('../core/types.js').Fixture[]} */
   const fixtures = [];
@@ -367,4 +434,135 @@ export function toFixturesWithReport(rawResponse) {
  */
 export function toFixtures(rawResponse) {
   return toFixturesWithReport(rawResponse).fixtures;
+}
+
+/**
+ * Status TERMINAIS: a partida acabou, foi adiada ou cancelada, e **não volta
+ * a ficar ao vivo**.
+ *
+ * Derivado do `STATUS_MAP`: são os `short` que mapeiam para `'finished'` ou
+ * `'cancelled'`. Escrito como derivação e não como segunda lista literal,
+ * porque duas listas divergem — acrescentar um status ao mapa e esquecer
+ * desta faria uma partida encerrada continuar abrindo o portão do cron.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const STATUS_TERMINAIS = Object.freeze(
+  new Set(
+    Object.keys(STATUS_MAP).filter(
+      (short) => STATUS_MAP[short] === 'finished' || STATUS_MAP[short] === 'cancelled',
+    ),
+  ),
+);
+
+/**
+ * Relatório da conversão da agenda.
+ *
+ * @typedef  {object} ToAgendaReport
+ * @property {import('../core/types.js').AgendaEntry[]} entries
+ * @property {number} discarded
+ *   Partidas que a resposta trouxe e que não deram nem `leagueId` nem
+ *   `kickoffISO` utilizável. Mesmo contrato de `ToFixturesReport.discarded`:
+ *   perda contada, nunca silenciosa.
+ * @property {number} finished
+ *   Partidas descartadas por já estarem encerradas, adiadas ou canceladas NO
+ *   MOMENTO DA CAPTURA. Separado de `discarded` de propósito: uma é perda,
+ *   a outra é economia deliberada. Somá-las faria um dia normal parecer um
+ *   dia de payload quebrado — MEDIDO, 128 das 454 da captura de 2026-09-04
+ *   (FT 108, PST 19, PEN 1) caem aqui.
+ */
+
+/**
+ * `GET /fixtures?date=YYYY-MM-DD` → agenda do dia, reduzida ao que o portão lê.
+ *
+ * ## Por que reduzir
+ *
+ * A chave `agenda` do KV responde uma pergunta só: "há jogo de interesse
+ * hoje, e a que horas?". `hasMatchInProgress` lê `leagueId` e `kickoffISO`, e
+ * nada mais. MEDIDO na captura de 2026-09-04: 421,3 KB de payload cru contra
+ * **26,6 KB** reduzido, mesmas 454 partidas — 94% do peso é logo, estádio,
+ * árbitro, placar e nome de time que essa chave nunca usa.
+ *
+ * ## Por que NÃO filtrar por liga aqui
+ *
+ * Tentador — filtrar pela semente daria **zero entradas** na captura de
+ * 2026-09-04, porque nenhuma liga prioritária jogou nesse dia. E é
+ * exatamente por isso que não se faz: assaria `DEFAULT_LEAGUE_IDS` num dado
+ * gravado uma vez por dia. Mudar a semente passaria a exigir esperar a
+ * próxima gravação para ter efeito, e o conjunto efetivo da UI —
+ * `activeLeagueIds(agenda, favoritas)` — perderia a informação de que uma
+ * liga favoritada tem jogo hoje. O filtro é do leitor, não do escritor.
+ *
+ * ## Por que descartar os terminais
+ *
+ * `hasMatchInProgress` abre o portão pela JANELA DE KICKOFF (3h), não pelo
+ * status: uma partida que começou há 2h e já terminou continuaria dentro da
+ * janela e faria o cron gastar requisição em jogo nenhum.
+ *
+ * **Isso NARRA o vazamento, não o fecha.** A agenda é buscada uma vez por
+ * dia, quando quase tudo ainda é `NS`; uma partida que termina depois da
+ * captura permanece na agenda como se fosse acontecer. Fechar de verdade
+ * exigiria status no momento do portão, que é justamente o que a agenda não
+ * pode dar sem gastar outra requisição. O que se ganha aqui é o recorte já
+ * encerrado na hora da captura — MEDIDO, 128 de 454.
+ *
+ * @param {unknown} rawResponse  Corpo JSON já parseado de `/fixtures?date=`.
+ * @returns {ToAgendaReport}
+ * @throws {Error}
+ *   Nas condições de `validarEnvelope`, ou se **todas** as partidas da
+ *   resposta forem indecifráveis. Note a assimetria com `toFixturesWithReport`:
+ *   agenda vazia por terminais é resultado LEGÍTIMO — "hoje não há mais jogo"
+ *   —, devolve `[]`, o portão fecha e o custo é zero. Só o payload
+ *   indecifrável lança.
+ */
+export function toAgendaWithReport(rawResponse) {
+  const envelope = validarEnvelope(rawResponse);
+
+  /** @type {import('../core/types.js').AgendaEntry[]} */
+  const entries = [];
+  let discarded = 0;
+  let finished = 0;
+
+  for (const raw of envelope.response) {
+    const leagueId = toId(raw?.league?.id);
+    const kickoffISO = typeof raw?.fixture?.date === 'string' && raw.fixture.date !== ''
+      ? raw.fixture.date
+      : null;
+
+    // Sem um dos dois a entrada não responde à pergunta do portão: sem liga
+    // nunca cruza com `activeLeagueIds`, sem kickoff não há janela para
+    // comparar com o relógio. Contada como perda, não descartada em silêncio.
+    if (leagueId === null || kickoffISO === null) {
+      discarded += 1;
+      continue;
+    }
+
+    const short = raw?.fixture?.status?.short;
+    if (typeof short === 'string' && STATUS_TERMINAIS.has(short)) {
+      finished += 1;
+      continue;
+    }
+
+    entries.push({ leagueId, kickoffISO });
+  }
+
+  // Só lança quando NADA foi decifrável — ver a assimetria no @throws.
+  if (envelope.response.length > 0 && entries.length === 0 && finished === 0) {
+    throw new Error(
+      `api-football: ${envelope.response.length} partidas na agenda e nenhuma decifrável`,
+    );
+  }
+
+  return { entries, discarded, finished };
+}
+
+/**
+ * Versão sem relatório. Mesma validação, mesmos lançamentos, mesmo descarte.
+ *
+ * @param {unknown} rawResponse
+ * @returns {import('../core/types.js').AgendaEntry[]}
+ * @throws {Error} Nas mesmas condições de `toAgendaWithReport`.
+ */
+export function toAgenda(rawResponse) {
+  return toAgendaWithReport(rawResponse).entries;
 }

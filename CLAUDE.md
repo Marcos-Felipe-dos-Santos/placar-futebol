@@ -31,7 +31,13 @@ transcript e nunca mais sai.
 inclusive quando um teste falha por falta de chave: reporte a falha e pare.
 
 Vale também para `*-sample.json` — não pelo segredo, mas pelo tamanho: `leagues-sample.json` tem
-3 MB e 1237 ligas. Não leia integralmente; peça um resumo por script.
+3 MB e 1237 ligas, `agenda-sample.json` tem 440 KB. Não leia integralmente; peça um resumo por
+script, e escreva o script num arquivo em vez de `node -e`: as capturas têm **BOM**, e `JSON.parse`
+falhando dentro de `node -e` faz o node ecoar a entrada inteira — foi assim que meio arquivo entrou
+num transcript. Remova o BOM (`.replace(/^﻿/, '')`) antes de parsear.
+
+Toda captura nova entra no `.gitignore` **antes** de qualquer `git add`. As quatro de hoje estão
+lá; a quinta é responsabilidade de quem a criar.
 
 A chave de produção é **secret do painel do Cloudflare**. Nunca no código, nunca no cliente, nunca
 num log, nunca num commit, e o `wrangler.toml` versionado nunca a contém. O README descreve o
@@ -92,15 +98,32 @@ e é lá que uma revisão ganha o que o diff sozinho não dá.
 `src/core/` mudou quando ele saiu do stub. Recortes verbatim da captura vivem em
 `test/helpers/apiFootballSamples.js`, porque o arquivo de 58 KB não é versionado.
 
-**O que continua NÃO observado:** o shape de `GET /fixtures?date=YYYY-MM-DD`, que é o que alimenta
-a agenda e, por ela, o portão do cron. **Não invente esse mapeamento** — a mesma regra que valeu
-para o `live=all` vale aqui, e é por isso que o cron opera em fail-open enquanto a chave `agenda`
-do KV estiver vazia. Quando a captura chegar, só o adaptador muda; se exigir mudança no núcleo, a
-fronteira falhou e isso é assunto para o dev, não algo a contornar.
+**`GET /fixtures?date=YYYY-MM-DD` foi observado em 2026-09-04** (454 partidas, 209 ligas) e o
+adaptador da agenda está implementado contra ele. A fronteira aguentou de novo: nada em `src/core/`
+mudou por causa do endpoint novo — só entrou o typedef `AgendaEntry`, que é modelo interno.
 
-No `STATUS_MAP`, só `1H` e `2H` foram verificados contra captura real; os outros 17 são inferência
-da documentação e estão marcados como tal no arquivo. Não os promova a medidos sem uma captura que
-os contenha.
+**Os dois endpoints têm o MESMO shape de item, e isto é medido, não suposto:** a união dos caminhos
+de campo das 454 partidas da agenda é idêntica à das 89 de `live=all`, com uma única diferença —
+`events` existe no ao vivo e não na agenda. O adaptador não lê `events`, então é **um adaptador com
+dois pontos de entrada**, `toFixturesWithReport` e `toAgendaWithReport`, que diferem no formato de
+SAÍDA. Não os separe em dois arquivos "porque são endpoints diferentes": a entrada é a mesma e duas
+cópias divergem.
+
+**A agenda vai reduzida ao KV:** `AgendaEntry` é `{leagueId, kickoffISO}`, que é exatamente o que
+`hasMatchInProgress` lê. Medido: 421 KB crus contra 26,6 KB reduzidos, mesmas 454 partidas.
+**Não filtre por liga no escritor** — daria zero entradas na captura de 2026-09-04, e assaria
+`DEFAULT_LEAGUE_IDS` num dado gravado uma vez por dia. O filtro é do leitor.
+
+**O cron continua em fail-open, e vai continuar até existir quem GRAVE a chave `agenda`.** Hoje o
+Worker só a lê; nada escreve. O adaptador é a metade de baixo do caminho — a de cima é uma busca
+diária contra a reserva de 10 requisições, com portão próprio, e ela ainda não existe.
+
+No `STATUS_MAP`, sete códigos foram medidos: `1H`, `2H` e `HT` em `live=all`; `NS`, `FT`, `PST` e
+`PEN` em `date=`. Os outros doze são inferência da documentação e estão marcados como tal no
+arquivo, com a captura de origem ao lado de cada medido — status visto só em `date=` é evidência
+mais fraca para o caminho ao vivo, que é o que dispara alerta de gol. Não os promova sem uma captura
+que os contenha; há teste (`S2b`) que exige recorte verbatim para cada um marcado como medido, e que
+falha se um inferido ganhar amostra sem a marcação mudar.
 
 ## Consumo do núcleo: só `applySnapshot`
 

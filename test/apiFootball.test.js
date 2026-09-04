@@ -1,12 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFixtures, toFixturesWithReport, STATUS_MAP } from '../src/adapters/apiFootball.js';
+import { hasMatchInProgress } from '../src/core/gate.js';
+import * as amostrasVerbatim from './helpers/apiFootballSamples.js';
+import {
+  toFixtures,
+  toFixturesWithReport,
+  toAgenda,
+  toAgendaWithReport,
+  STATUS_MAP,
+} from '../src/adapters/apiFootball.js';
 import {
   primeiroTempo,
   primeiroTempoAcrescimo,
   segundoTempo,
   segundoTempoSaturado,
   envelopeVazio,
+  agendaNS,
+  agendaFT,
+  agendaPST,
+  agendaPEN,
+  agenda1H,
+  agendaHT,
+  envelopeAgendaVazio,
+  picoIntervalo,
 } from './helpers/apiFootballSamples.js';
 
 /** Envelope real em volta de uma lista de fixtures crus. */
@@ -369,13 +385,76 @@ test('S5: placar negativo ou fracionário entra como null', () => {
 });
 
 test('S2: todo status.short das amostras versionadas está no mapa', () => {
-  // Derivado da evidência, não de literal escrito à mão: acrescentar uma
-  // amostra nova ao helper faz este teste crescer sozinho.
-  const amostras = [primeiroTempo, primeiroTempoAcrescimo, segundoTempo, segundoTempoSaturado];
+  // Derivado do MÓDULO inteiro, não de uma lista escrita à mão: acrescentar
+  // uma amostra ao helper faz este teste crescer sozinho de verdade. A versão
+  // anterior prometia isso num comentário e enumerava quatro constantes — a
+  // mensagem descrevia uma lei que o código não impunha, e as seis amostras
+  // novas da agenda teriam entrado sem ninguém conferir.
+  const amostras = Object.values(amostrasVerbatim).filter(
+    (a) => typeof a?.fixture?.status?.short === 'string',
+  );
+
+  assert.ok(amostras.length >= 10, `só ${amostras.length} amostras: o filtro parou de achá-las`);
   for (const amostra of amostras) {
     const short = amostra.fixture.status.short;
     assert.ok(Object.hasOwn(STATUS_MAP, short), `${short} está na captura e não no mapa`);
   }
+});
+
+test('S2b: cada status MEDIDO tem amostra verbatim que o sustenta', () => {
+  // A marcação ✅ / 📄 no adaptador é uma afirmação sobre evidência, e
+  // afirmação sobre evidência tem que ser verificável. Estes sete têm recorte
+  // real no helper; os outros doze são inferência da documentação e NÃO
+  // aparecem aqui de propósito.
+  const medidos = {
+    '1H': 'live',
+    '2H': 'live',
+    HT: 'halftime',
+    NS: 'scheduled',
+    FT: 'finished',
+    PST: 'cancelled',
+    PEN: 'finished',
+  };
+  const observados = new Set(
+    Object.values(amostrasVerbatim)
+      .map((a) => a?.fixture?.status?.short)
+      .filter((x) => typeof x === 'string'),
+  );
+
+  for (const [short, interno] of Object.entries(medidos)) {
+    assert.ok(observados.has(short), `${short} está marcado como medido e não tem amostra`);
+    assert.equal(STATUS_MAP[short], interno, `${short} deveria virar ${interno}`);
+  }
+
+  // Controle positivo, DERIVADO e não enumerado: todo status do mapa que não
+  // está marcado como medido é inferido, e inferido não pode ter amostra —
+  // se ganhar uma, a marcação do adaptador é que está desatualizada.
+  //
+  // Enumerar aqui foi o primeiro impulso e estava errado: a lista tinha nove
+  // dos doze inferidos, e um recorte de `ET` teria entrado sem ninguém
+  // conferir. Teste que itera precisa cobrir o domínio inteiro da invariante.
+  const inferidos = Object.keys(STATUS_MAP).filter((short) => !(short in medidos));
+  assert.equal(inferidos.length, 12, 'a conta de medidos/inferidos mudou sem o teste mudar');
+  for (const inferido of inferidos) {
+    assert.ok(
+      !observados.has(inferido),
+      `${inferido} tem amostra verbatim: promova-o a medido no STATUS_MAP`,
+    );
+  }
+});
+
+test('S2c: o HT medido no caminho AO VIVO vem de live=all, não da agenda', () => {
+  // A marcação do adaptador credita `HT` ao `live=all`, e é `live=all` que
+  // alimenta o diff e dispara alerta de gol. Se a única amostra de `HT` fosse
+  // do endpoint `date=`, a marcação estaria mentindo e este teste passaria por
+  // cima da distinção que o próprio adaptador enuncia.
+  assert.equal(picoIntervalo.fixture.status.short, 'HT');
+  assert.ok('events' in picoIntervalo, 'não é recorte de live=all: falta a chave events');
+  assert.ok(!('events' in agendaHT), 'a captura da agenda mudou: passou a trazer events');
+  // E o recorte ao vivo confirma a saturação do minuto também no intervalo:
+  // 45 com `extra: 1`, o mesmo padrão do primeiro tempo em live-sample.
+  assert.equal(picoIntervalo.fixture.status.elapsed, 45);
+  assert.equal(picoIntervalo.fixture.status.extra, 1);
 });
 
 test('S1: o mapa não tem chave a mais nem a menos que o conjunto documentado', () => {
@@ -466,4 +545,129 @@ test('truncated é campo de costura: hoje inalcançável porque truncamento lan�
 
   // Controle positivo: envelope íntegro reporta truncated: false.
   assert.equal(toFixturesWithReport(envelope([primeiroTempo])).truncated, false);
+});
+
+// === adaptador da AGENDA (GET /fixtures?date=) ==============================
+//
+// Escrito contra `agenda-sample.json`: 454 partidas de 2026-09-04, 209 ligas.
+// Os recortes abaixo são verbatim do arquivo. O shape de item é IDÊNTICO ao de
+// `live=all` — medido, única diferença é `events`, que o adaptador não lê —,
+// então o que muda aqui é o formato de SAÍDA, não o de entrada.
+
+/** Envelope real da agenda em volta de uma lista de fixtures crus. */
+function envelopeAgenda(response) {
+  return { ...envelopeAgendaVazio, results: response.length, response };
+}
+
+test('agenda: reduz a partida ao que o portão lê, e nada mais', () => {
+  const [entrada] = toAgenda(envelopeAgenda([agendaNS]));
+
+  // Verbatim da captura: liga 278, kickoff 12:15 UTC com offset explícito.
+  assert.deepEqual(entrada, {
+    leagueId: '278',
+    kickoffISO: '2026-09-04T12:15:00+00:00',
+  });
+  // A lista de chaves é o contrato: campo a mais aqui é peso numa chave do KV
+  // que só responde "há jogo de interesse hoje?".
+  assert.deepEqual(Object.keys(entrada).sort(), ['kickoffISO', 'leagueId']);
+});
+
+test('agenda: leagueId vira string, como Fixture.leagueId', () => {
+  // Na captura `league.id` é number. Se vazasse number, o cruzamento com
+  // `activeLeagueIds` — que guarda string — nunca casaria, e o portão ficaria
+  // fechado o dia inteiro sem erro nenhum aparecendo.
+  const [entrada] = toAgenda(envelopeAgenda([agendaNS]));
+  assert.equal(typeof entrada.leagueId, 'string');
+  assert.equal(typeof agendaNS.league.id, 'number', 'a captura mudou: league.id não é mais number');
+});
+
+test('agenda: kickoffISO é verbatim, não reescrito', () => {
+  // O provedor manda offset `+00:00`, não sufixo `Z`. Normalizar introduziria
+  // uma conversão que pode falhar e não acrescenta nada: `Date.parse` lê as
+  // duas formas, e é `Date.parse` que `hasMatchInProgress` usa.
+  const [entrada] = toAgenda(envelopeAgenda([agendaNS]));
+  assert.equal(entrada.kickoffISO, agendaNS.fixture.date);
+  assert.match(entrada.kickoffISO, /\+00:00$/);
+});
+
+test('agenda: partida encerrada na captura não entra e é contada', () => {
+  // `hasMatchInProgress` abre pela janela de kickoff, não por status: uma
+  // partida que começou há 2h e já acabou continuaria dentro da janela de 3h
+  // e faria o cron gastar requisição em jogo nenhum.
+  const r = toAgendaWithReport(envelopeAgenda([agendaFT, agendaPST, agendaPEN]));
+
+  assert.deepEqual(r.entries, [], 'FT, PST e PEN não podem abrir o portão');
+  assert.equal(r.finished, 3);
+  assert.equal(r.discarded, 0, 'terminal é economia, não perda: não pode contar como descarte');
+});
+
+test('agenda: partida em andamento ou por vir ENTRA', () => {
+  // Controle positivo do teste acima: sem isto, um adaptador que descartasse
+  // tudo passaria naquele assert.
+  const r = toAgendaWithReport(envelopeAgenda([agendaNS, agenda1H, agendaHT]));
+
+  assert.equal(r.entries.length, 3);
+  assert.equal(r.finished, 0);
+  assert.deepEqual(r.entries.map((e) => e.leagueId), ['278', '887', '371']);
+});
+
+test('agenda: dia inteiro já encerrado devolve [], não lança', () => {
+  // ASSIMETRIA DELIBERADA com `toFixturesWithReport`, que lança quando nenhuma
+  // partida é utilizável. Aqui `[]` é resposta legítima — "hoje não há mais
+  // jogo" —, o portão fecha e o custo é zero. Lançar faria o Worker cair no
+  // fail-open e gastar cota justamente na noite em que não há nada.
+  const r = toAgendaWithReport(envelopeAgenda([agendaFT, agendaFT]));
+  assert.deepEqual(r.entries, []);
+  assert.equal(r.finished, 2);
+});
+
+test('agenda: payload indecifrável LANÇA, e não vira agenda vazia', () => {
+  // O outro lado da assimetria. Agenda vazia por engano fecharia o portão o
+  // dia inteiro com a página correta e vazia — indistinguível de quebrada. Um
+  // item sem liga nem data não é "não há jogo", é "não sei".
+  assert.throws(
+    () => toAgendaWithReport(envelopeAgenda([{ fixture: {}, league: {} }])),
+    /nenhuma decifrável/,
+  );
+});
+
+test('agenda: item sem liga ou sem data é descartado e CONTADO', () => {
+  const semLiga = { ...agendaNS, league: { ...agendaNS.league, id: null } };
+  const semData = { ...agendaNS, fixture: { ...agendaNS.fixture, date: null } };
+  const r = toAgendaWithReport(envelopeAgenda([agendaNS, semLiga, semData]));
+
+  assert.equal(r.entries.length, 1, 'a partida boa tem que sobreviver aos vizinhos ruins');
+  assert.equal(r.discarded, 2, 'perda tem que ser contada, nunca silenciosa');
+  assert.equal(r.finished, 0, 'descarte por payload não pode ser contado como terminal');
+});
+
+test('agenda: envelope inválido lança pelas mesmas regras do ao vivo', () => {
+  // Mesma validação compartilhada: `errors` preenchido chega com HTTP 200, e
+  // checar só o status code não pega.
+  assert.throws(() => toAgenda(null), /envelope de objeto/);
+  assert.throws(() => toAgenda({ ...envelopeAgendaVazio, errors: ['plano não cobre'] }), /errors/);
+  assert.throws(() => toAgenda({ ...envelopeAgendaVazio, response: 'não é array' }), /array/);
+  assert.throws(
+    () => toAgenda({ ...envelopeAgendaVazio, results: 9, response: [agendaNS] }),
+    /truncada/,
+  );
+});
+
+test('agenda: resposta legitimamente vazia devolve [] sem lançar', () => {
+  // Controle positivo dos throws acima: nem toda lista vazia é erro.
+  const r = toAgendaWithReport(envelopeAgendaVazio);
+  assert.deepEqual(r.entries, []);
+  assert.equal(r.discarded, 0);
+});
+
+test('agenda: a saída é consumível por hasMatchInProgress sem tradução', () => {
+  // A fronteira só vale se o que o adaptador produz entra no núcleo direto. Se
+  // precisasse de conversão, a redução teria trocado peso por acoplamento.
+  const entries = toAgenda(envelopeAgenda([agendaNS]));
+  const kickoff = Date.parse(entries[0].kickoffISO);
+
+  assert.ok(Number.isFinite(kickoff), 'kickoffISO não é parseável: o portão não abriria nunca');
+  assert.equal(hasMatchInProgress(entries, kickoff + 60_000, new Set(['278'])), true);
+  // Controle positivo: liga fora do conjunto não abre o portão.
+  assert.equal(hasMatchInProgress(entries, kickoff + 60_000, new Set(['71'])), false);
 });
