@@ -464,12 +464,21 @@ const STATUS_TERMINAIS = Object.freeze(
  *   Partidas que a resposta trouxe e que não deram nem `leagueId` nem
  *   `kickoffISO` utilizável. Mesmo contrato de `ToFixturesReport.discarded`:
  *   perda contada, nunca silenciosa.
- * @property {number} finished
- *   Partidas descartadas por já estarem encerradas, adiadas ou canceladas NO
- *   MOMENTO DA CAPTURA. Separado de `discarded` de propósito: uma é perda,
- *   a outra é economia deliberada. Somá-las faria um dia normal parecer um
- *   dia de payload quebrado — MEDIDO, 128 das 454 da captura de 2026-09-04
- *   (FT 108, PST 19, PEN 1) caem aqui.
+ * @property {number} terminal
+ *   Partidas descartadas porque o status delas é TERMINAL na captura — a
+ *   partida acabou, foi adiada ou foi cancelada, e não volta a ficar ao vivo.
+ *   MEDIDO: 128 das 454 de 2026-09-04 (FT 108, PST 19, PEN 1).
+ *
+ *   Separado de `discarded` de propósito: uma é perda, a outra é economia
+ *   deliberada. Somá-las faria um dia normal parecer um dia de payload
+ *   quebrado.
+ *
+ *   NOME: chamava-se `finished`, e estava errado — `PST` e `CANC` não são
+ *   "encerradas", e um campo que conta as duas coisas sob esse nome levaria a
+ *   UI a dizer "128 encerradas" sobre 19 adiadas. `terminal` é o mesmo
+ *   vocabulário de `STATUS_TERMINAIS`, que é a lista que decide quem cai
+ *   aqui. Renomeado enquanto ainda não havia consumidor, que é o momento mais
+ *   barato — depois vira mudança de contrato atravessando PRs.
  */
 
 /**
@@ -521,7 +530,7 @@ export function toAgendaWithReport(rawResponse) {
   /** @type {import('../core/types.js').AgendaEntry[]} */
   const entries = [];
   let discarded = 0;
-  let finished = 0;
+  let terminal = 0;
 
   for (const raw of envelope.response) {
     const leagueId = toId(raw?.league?.id);
@@ -539,7 +548,7 @@ export function toAgendaWithReport(rawResponse) {
 
     const short = raw?.fixture?.status?.short;
     if (typeof short === 'string' && STATUS_TERMINAIS.has(short)) {
-      finished += 1;
+      terminal += 1;
       continue;
     }
 
@@ -547,13 +556,13 @@ export function toAgendaWithReport(rawResponse) {
   }
 
   // Só lança quando NADA foi decifrável — ver a assimetria no @throws.
-  if (envelope.response.length > 0 && entries.length === 0 && finished === 0) {
+  if (envelope.response.length > 0 && entries.length === 0 && terminal === 0) {
     throw new Error(
       `api-football: ${envelope.response.length} partidas na agenda e nenhuma decifrável`,
     );
   }
 
-  return { entries, discarded, finished };
+  return { entries, discarded, terminal };
 }
 
 /**

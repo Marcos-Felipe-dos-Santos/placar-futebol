@@ -597,7 +597,7 @@ test('agenda: partida encerrada na captura não entra e é contada', () => {
   const r = toAgendaWithReport(envelopeAgenda([agendaFT, agendaPST, agendaPEN]));
 
   assert.deepEqual(r.entries, [], 'FT, PST e PEN não podem abrir o portão');
-  assert.equal(r.finished, 3);
+  assert.equal(r.terminal, 3);
   assert.equal(r.discarded, 0, 'terminal é economia, não perda: não pode contar como descarte');
 });
 
@@ -607,7 +607,7 @@ test('agenda: partida em andamento ou por vir ENTRA', () => {
   const r = toAgendaWithReport(envelopeAgenda([agendaNS, agenda1H, agendaHT]));
 
   assert.equal(r.entries.length, 3);
-  assert.equal(r.finished, 0);
+  assert.equal(r.terminal, 0);
   assert.deepEqual(r.entries.map((e) => e.leagueId), ['278', '887', '371']);
 });
 
@@ -618,7 +618,7 @@ test('agenda: dia inteiro já encerrado devolve [], não lança', () => {
   // fail-open e gastar cota justamente na noite em que não há nada.
   const r = toAgendaWithReport(envelopeAgenda([agendaFT, agendaFT]));
   assert.deepEqual(r.entries, []);
-  assert.equal(r.finished, 2);
+  assert.equal(r.terminal, 2);
 });
 
 test('agenda: payload indecifrável LANÇA, e não vira agenda vazia', () => {
@@ -638,7 +638,7 @@ test('agenda: item sem liga ou sem data é descartado e CONTADO', () => {
 
   assert.equal(r.entries.length, 1, 'a partida boa tem que sobreviver aos vizinhos ruins');
   assert.equal(r.discarded, 2, 'perda tem que ser contada, nunca silenciosa');
-  assert.equal(r.finished, 0, 'descarte por payload não pode ser contado como terminal');
+  assert.equal(r.terminal, 0, 'descarte por payload não pode ser contado como terminal');
 });
 
 test('agenda: envelope inválido lança pelas mesmas regras do ao vivo', () => {
