@@ -190,6 +190,27 @@ BRT**. Não é por cliente: é a chave inteira.
   Desproporcional para uso pessoal, perigoso num portfólio público. O segundo argumento existe e é
   legítimo, mas **só o filtro da UI o passa**. Prende isso o teste
   "cron: o portão é da SEMENTE" em `test/worker.test.js`.
+- **A FAIXA DE DIAGNÓSTICO tem precedência decidida em `src/core/notice.js`, não no CSS.**
+  Ela aparece **só quando há algo a dizer** — faixa permanente vira mobília e o dia em que ela
+  importa é o dia em que ninguém repara —, e quando aparece é **uma só**, nunca empilhada.
+
+  O critério de ordem: **quanto mais o aviso invalida o que está na tela, mais alto ele fica.** Não
+  é gravidade no servidor, é quanto do que o usuário está vendo deixa de ser confiável. Daí a ordem
+  `sem-dado` > `parado-quebrado` > `parado-sem-cota` > `parado-motivo-desconhecido` >
+  `parado-sem-jogo` > `incompleto` > `as-cegas` > `vazio`. Dois pontos que parecem invertidos e não
+  são: **quebrado vence sem-cota** (pipeline caído não volta no reset, e prometer "volta às 21:00"
+  seria mentira confortável) e **"não sei" vence o caso benigno** (`cron === null` jamais pode ser
+  apresentado como "não há jogo agora").
+
+  **`uncoveredFavorites` fica FORA da faixa**, e é isso que resolve o empilhamento sem perder o
+  aviso: ele não é estado da página, é propriedade permanente de UMA liga, e mora junto do filtro
+  dela. A exceção é a grade vazia, onde a contagem viaja em `data.uncovered` para caber numa frase
+  só. Regra geral que sai daqui: **aviso de escopo local não disputa faixa global** — senão ou
+  esconde um aviso temporal ou empilha.
+
+  `chooseNotice` devolve **código e números, nunca texto**: a redação é da view, pelo mesmo motivo
+  que os rótulos de `reason` não entraram no núcleo. Há teste que falha se uma string entrar em
+  `data`.
 - **Dois avisos que o PR 3 TEM de renderizar.** São os dois casos conhecidos de "correta e vazia",
   o modo de falha que este projeto mais combate, e por isso ficam juntos:
   1. **Favorita sem cobertura.** Liga favoritada fora da semente não tem cobertura ao vivo
@@ -203,7 +224,8 @@ BRT**. Não é por cliente: é a chave inteira.
      "não havia jogo agora" — e aí a grade vazia está CERTA e a página pode dizer isso.
      `cron === null` é "não sei", que também se diz, e nunca se pinta de verde.
 
-  Em nenhum dos três o gancho é prosa: são campo e função, com teste.
+  Em nenhum dos três o gancho é prosa: são campo e função, com teste. Os três chegam à tela por
+  `chooseNotice`, exceto o primeiro — ver a faixa de diagnóstico acima.
 - **Duas perguntas, duas chaves, duas fontes na resposta.** `GET /api/live` serve o snapshot **e**
   o estado do cron, no campo `cron`. `snapshot.fetchedAtMs` responde *"o dado é novo?"*;
   `cron` responde *"por que não é?"*. Isso **não** viola "nada de heartbeat": o `state` já é escrito
