@@ -19,6 +19,36 @@ import fs from 'node:fs';
 const app = fs.readFileSync('app.js', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 
+/**
+ * Recorta a função sob medição — com a guarda POR CONSTRUÇÃO.
+ *
+ * Este helper existe porque a guarda escrita à mão foi esquecida em seis dos
+ * sete recortes deste arquivo, no mesmo commit que enunciou a regra. Provado
+ * por mutação: renomeando `renderFaixa`, o teste que tinha a guarda ficou
+ * vermelho e o que não tinha passou com o recorte destruído — `indexOf`
+ * devolve -1, o `slice` vira lixo e `assert.ok(!lixo.includes(x))` passa por
+ * vacuidade.
+ *
+ * A lição de segunda ordem: **regra que depende de lembrar não é regra.** Se a
+ * guarda pode ser esquecida, ela vai dentro da ferramenta, e aí não há como
+ * escrever o teste errado.
+ *
+ * @param {string} de   Marcador de início, ex.: `function renderFaixa`.
+ * @param {string} ate  Marcador de fim.
+ * @returns {string}
+ */
+function recortar(de, ate) {
+  const inicio = app.indexOf(de);
+  const fim = app.indexOf(ate);
+  assert.notEqual(inicio, -1, `recorte falhou: "${de}" não existe mais em app.js`);
+  assert.notEqual(fim, -1, `recorte falhou: "${ate}" não existe mais em app.js`);
+  assert.ok(inicio < fim, `recorte invertido: "${de}" aparece depois de "${ate}"`);
+
+  const trecho = app.slice(inicio, fim);
+  assert.ok(trecho.length > 100, `recorte de "${de}" tem ${trecho.length} chars: parou de medir`);
+  return trecho;
+}
+
 test('CONTRATO 1: o núcleo é consumido SÓ por applySnapshot', () => {
   // Sequenciar `diffFixtures`/`shouldAlert`/`keepLatestSnapshot` na mão
   // reintroduz um alerta falso já corrigido: réplica atrasada do KV faz o
@@ -127,7 +157,7 @@ test('a partida fixada é podada a cada snapshot, não só na leitura', () => {
   // O corte por dia sozinho manteria o jogo encerrado às 22h fixado a noite
   // inteira. `prunePins` tem de rodar no caminho do poll, com as fixtures que
   // acabaram de chegar.
-  const buscar = app.slice(app.indexOf('async function buscar'), app.indexOf('// === render'));
+  const buscar = recortar('async function buscar', '// === render');
   assert.match(buscar, /prunePins\(\[\.\.\.favoritasPartida\], corpo\?\.fixtures/);
   assert.match(buscar, /gravarPartidas\(\)/);
 });
@@ -163,27 +193,29 @@ test('a faixa some quando não há aviso: ela não é mobília', () => {
   // trecho em `app.js` inteiro e passava mesmo com a faixa mutada para
   // `hidden = false`: `renderResync` tem um bloco idêntico e a regex casava com
   // ELE. Verde pelo motivo errado, e só a bateria de mutação pegou.
-  const renderFaixa = app.slice(app.indexOf('function renderFaixa'), app.indexOf('function renderResync'));
-  assert.ok(renderFaixa.length > 100, 'o recorte de renderFaixa falhou: o teste parou de medir');
+  //
+  // O recorte vem de `recortar`, que carrega a guarda de recorte vazio por
+  // construção — ver o cabeçalho do helper.
+  const renderFaixa = recortar('function renderFaixa', 'function renderResync');
   assert.match(renderFaixa, /if \(texto === null\) \{\s*alvo\.hidden = true;/);
   assert.match(html, /<section id="faixa"[^>]*hidden><\/section>/);
 
   // O resync tem a mesma regra e o seu próprio recorte — os dois somem quando
   // não há o que dizer.
-  const renderResync = app.slice(app.indexOf('function renderResync'), app.indexOf('function renderIdade'));
+  const renderResync = recortar('function renderResync', 'function renderIdade');
   assert.match(renderResync, /if \(texto === null\) \{\s*alvo\.hidden = true;/);
 });
 
 test('o aviso de cobertura está no CHIP, e a faixa não sabe dele', () => {
   // Escopo local não disputa faixa global. Se `chipCoberturaTexto` fosse
   // chamado dentro de `renderFaixa`, o empilhamento voltaria.
-  const renderFaixa = app.slice(app.indexOf('function renderFaixa'), app.indexOf('function renderResync'));
+  const renderFaixa = recortar('function renderFaixa', 'function renderResync');
   assert.ok(
     !renderFaixa.includes('chipCoberturaTexto'),
     'o aviso de liga voltou para a faixa global',
   );
 
-  const renderChips = app.slice(app.indexOf('function renderChips'), app.indexOf('function renderGrade'));
+  const renderChips = recortar('function renderChips', 'function renderGrade');
   assert.ok(renderChips.includes('chipCoberturaTexto'), 'o chip perdeu o aviso de cobertura');
 });
 
@@ -191,7 +223,7 @@ test('resposta não-ok do Worker não vira grade vazia', () => {
   // 503 é "sem snapshot ainda" ou "KV fora do ar" — os dois são "não sei",
   // nunca "não há jogos". Renderizar lista vazia aqui seria a página correta e
   // vazia, que é o pior modo de falha deste projeto.
-  const buscar = app.slice(app.indexOf('async function buscar'), app.indexOf('// === render'));
+  const buscar = recortar('async function buscar', '// === render');
   assert.match(buscar, /if \(!resposta\.ok\) \{/);
   assert.match(buscar, /falhaDeRede = true;/);
   assert.ok(

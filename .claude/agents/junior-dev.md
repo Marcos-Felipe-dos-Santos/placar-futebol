@@ -54,10 +54,21 @@ Se a resposta depender do iterador, da amostra ou do recorte, é um destes três
    bloco byte a byte igual e a regex casava com ELE. O mutante sobreviveu e só apareceu porque a
    bateria rodou.
 
-   Recorte a função antes de asserir — `app.slice(indexOf('function alvo'), indexOf('function
-   seguinte'))` — e acrescente um `assert.ok(recorte.length > N)` para o dia em que a função for
-   renomeada e o recorte vier vazio: recorte vazio faz `assert.ok(!recorte.includes(...))` passar
-   por vacuidade, que é a regra 3 voltando por outra porta.
+   Recorte a função antes de asserir. E **a guarda de recorte vazio vai DENTRO de um helper**, não
+   escrita à mão em cada teste — `indexOf` devolve `-1` quando a função é renomeada, o `slice` vira
+   lixo e `assert.ok(!lixo.includes(...))` passa por vacuidade, que é a regra 3 voltando por outra
+   porta.
+
+   **Isto aconteceu no mesmo commit que enunciou esta regra**, e é a parte que interessa: o autor
+   escreveu a guarda em um dos sete recortes e esqueceu nos outros seis. Renomear `renderFaixa`
+   deixava vermelho o teste que tinha a guarda e **verde** o que não tinha, com o recorte
+   destruído. A correção não foi escrever a guarda seis vezes: foi um `recortar(de, ate)` que
+   assere os dois marcadores e o tamanho mínimo antes de devolver o trecho.
+
+   **A lição de segunda ordem, que vale muito além de recorte: regra que depende de lembrar não é
+   regra.** Se a guarda pode ser esquecida, ela pertence à ferramenta e não à disciplina — do
+   mesmo jeito que a fronteira entre quem lê e quem grava pertence à lista de ferramentas do
+   agente, e não a um pedido em prosa.
 
    Vale para todo teste que lê arquivo em vez de chamar função. Eles provam **ausência de caminho
    proibido**, nunca comportamento — e essa diferença tem de estar escrita no teste, senão alguém

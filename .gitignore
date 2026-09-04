@@ -18,5 +18,10 @@ leagues-sample.json
 live-pico.json
 agenda-sample.json
 
+# Mock local para abrir a pagina sem Worker. Gerado por tools/make-mock.mjs a
+# partir das capturas (que tambem nao sao versionadas): derivado, grande e
+# regeneravel — as tres razoes para nao versionar.
+mock-api.json
+
 # Dependências (o projeto não usa build, mas ferramentas locais podem criar)
 node_modules/
