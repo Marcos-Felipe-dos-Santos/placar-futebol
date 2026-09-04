@@ -24,6 +24,16 @@ Cloudflare Worker com KV e Cron Trigger. Testes com `node --test`; rode com `npm
    vacuidade e não prova nada — é o modo de falha recorrente deste projeto.
 4. Nunca use constante como régua para ela mesma. `assert.ok(ms >= MIN_INTERVAL_MS)` continua verde
    se alguém baixar `MIN_INTERVAL_MS` para 1. Use um literal defensável e explique-o no comentário.
+### As três de "teste cego por construção" — leia as três juntas
+
+As regras 5, 6 e 7 nasceram de episódios diferentes deste projeto e são a **mesma falha**: um teste
+que **não podia** pegar o que dizia pegar, e ficava verde por isso. Não é teste fraco nem cobertura
+faltando — é teste que, pela forma como foi escrito, olha para o lugar errado e ainda assim reporta
+sucesso. É o tipo mais caro de erro aqui, porque ele **remove** a desconfiança em vez de criar.
+
+Antes de escrever um teste, pergunte: *se o bug que eu temo existisse, este teste conseguiria vê-lo?*
+Se a resposta depender do iterador, da amostra ou do recorte, é um destes três casos.
+
 5. **Teste que itera uma estrutura tem que enxergar o espaço inteiro que a invariante cobre.**
    `Object.entries(MAPA)` percorre só chaves próprias e enumeráveis — não vê a cadeia de
    protótipos. Um teste que assere "nenhum valor deste mapa está fora do contrato" iterando
@@ -37,20 +47,36 @@ Cloudflare Worker com KV e Cron Trigger. Testes com `node --test`; rode com `npm
    mensagem vira documentação e é lida como promessa. **A mensagem é parte do que se revisa:**
    ao escrever uma, confira se o código realmente a impõe e se algum caso do teste a exercita.
    Se você só quer descrever o caso, descreva o caso, não a lei.
-5. Implemente o mínimo necessário pra esse PR. Nada de escopo extra.
-6. **Pureza do núcleo:** `src/core/` não tem `Math.random()`, `Date.now()`, `fetch`, `localStorage`
+7. **Asserção sobre TEXTO-FONTE precisa ser recortada na função sob medição.** Regex rodada no
+   arquivo inteiro casa o bloco idêntico de OUTRA função e fica verde pelo motivo errado.
+   Aconteceu no PR 3: o teste que exigia `if (texto === null) { alvo.hidden = true; }` em
+   `renderFaixa` passava com a faixa mutada para `hidden = false`, porque `renderResync` tinha um
+   bloco byte a byte igual e a regex casava com ELE. O mutante sobreviveu e só apareceu porque a
+   bateria rodou.
+
+   Recorte a função antes de asserir — `app.slice(indexOf('function alvo'), indexOf('function
+   seguinte'))` — e acrescente um `assert.ok(recorte.length > N)` para o dia em que a função for
+   renomeada e o recorte vier vazio: recorte vazio faz `assert.ok(!recorte.includes(...))` passar
+   por vacuidade, que é a regra 3 voltando por outra porta.
+
+   Vale para todo teste que lê arquivo em vez de chamar função. Eles provam **ausência de caminho
+   proibido**, nunca comportamento — e essa diferença tem de estar escrita no teste, senão alguém
+   lê "CONTRATO 1 passou" e acredita que a tela funciona.
+
+8. Implemente o mínimo necessário pra esse PR. Nada de escopo extra.
+9. **Pureza do núcleo:** `src/core/` não tem `Math.random()`, `Date.now()`, `fetch`, `localStorage`
    nem `setTimeout`. Tempo e estado entram por parâmetro.
-7. **Fronteira:** `src/core/` só conhece o modelo interno de `src/core/types.js`. Só
+10. **Fronteira:** `src/core/` só conhece o modelo interno de `src/core/types.js`. Só
    `src/adapters/` fala formato de provedor. Teste do núcleo nunca usa payload de API.
-8. **Ponto de entrada único:** o cliente consome `applySnapshot` de `src/core/session.js`. Não
+11. **Ponto de entrada único:** o cliente consome `applySnapshot` de `src/core/session.js`. Não
    sequencie `diffFixtures` → `shouldAlert` → `keepLatestSnapshot` na mão — errar essa ordem
    reintroduz um alerta falso já corrigido.
-9. **Cota e segredo:** nenhum caminho do fetch handler do Worker chama a API upstream. O cron só
+12. **Cota e segredo:** nenhum caminho do fetch handler do Worker chama a API upstream. O cron só
    grava no KV quando de fato buscou. A chave da API é secret do painel do Cloudflare — **nunca**
    no código, no cliente, num commit, num log nem no `wrangler.toml` versionado. Antes de commitar,
    confira o que está staged: `git diff --cached` não pode conter chave nenhuma.
-10. Rode `npm test` e mostre o resultado.
-11. **NUNCA faça push nem abra PR remoto.** Deixe o commit local pronto e peça revisão do
+13. Rode `npm test` e mostre o resultado.
+14. **NUNCA faça push nem abra PR remoto.** Deixe o commit local pronto e peça revisão do
     `senior-reviewer`. Após aprovação (ou se baixo risco e o reviewer foi pulado), **invoque o
     `doc-writer`** para atualizar `ESTADO.md` e `HISTORICO.md`. **NÃO atualize as docs você
     mesmo.** Aguarde aprovação explícita do dev pra qualquer coisa remota.

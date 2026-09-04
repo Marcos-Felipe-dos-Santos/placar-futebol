@@ -15,9 +15,12 @@
  *    pollando a 60s consumiria o dia inteiro em menos de um jogo.
  * 3. **Zero dependências, zero build.** É a premissa que sustenta GitHub
  *    Pages e o projeto inteiro.
- * 4. **`localStorage` só para favoritas e posição do overlay.** Nada de
- *    espelhar snapshot, cota ou estado do cron: seriam segundas fontes de
- *    verdade que envelhecem sem ninguém perceber.
+ * 4. **`localStorage` só para favoritas (liga e partida) e posição do
+ *    overlay.** Nada de espelhar snapshot, cota ou estado do cron: seriam
+ *    segundas fontes de verdade que envelhecem sem ninguém perceber.
+ *
+ *    As duas favoritas têm PRAZOS diferentes e por isso chaves diferentes:
+ *    liga é permanente, partida é efêmera — o jogo acaba. Ver `view/pins.js`.
  *
  * ## O estado do núcleo é OPACO
  *
@@ -34,6 +37,7 @@ import { isStale } from './src/core/staleness.js';
 import { chooseNotice } from './src/core/notice.js';
 import { uncoveredFavorites } from './src/core/leagues.js';
 import { visibleFixtures, leagueChips, sortFixtures } from './src/view/filter.js';
+import { parsePins, prunePins, serializePins } from './src/view/pins.js';
 import {
   noticeTexto,
   resyncTexto,
@@ -69,6 +73,7 @@ const TICK_MS = 1_000;
 
 const LS_FAVORITAS = 'placar:favoritas';
 const LS_OVERLAY = 'placar:overlay';
+const LS_PARTIDAS = 'placar:partidas';
 
 // === estado da sessão =======================================================
 
@@ -89,8 +94,17 @@ let falhaDeRede = false;
 /** @type {string[]} */
 let favoritas = lerFavoritas();
 
-/** @type {Set<string>} */
-const favoritasPartida = new Set();
+/**
+ * Partidas fixadas no overlay.
+ *
+ * Persistidas, mas com prazo: `parsePins` descarta o que foi fixado em outro
+ * dia e `prunePins` descarta o que já terminou. Sem os dois, o overlay
+ * carregaria os jogos da terça passada e o usuário teria de limpar a lista à
+ * mão para a página voltar a servir.
+ *
+ * @type {Set<string>}
+ */
+let favoritasPartida = new Set(lerPartidas());
 
 // === localStorage, com desconfiança =========================================
 
@@ -111,6 +125,22 @@ function gravarFavoritas() {
   } catch {
     // Modo privado do Safari, cota estourada. A favorita vale para esta
     // sessão; falhar aqui não pode custar a página.
+  }
+}
+
+function lerPartidas() {
+  try {
+    return parsePins(localStorage.getItem(LS_PARTIDAS), Date.now());
+  } catch {
+    return [];
+  }
+}
+
+function gravarPartidas() {
+  try {
+    localStorage.setItem(LS_PARTIDAS, JSON.stringify(serializePins([...favoritasPartida], Date.now())));
+  } catch {
+    // Mesma degradação das favoritas de liga: vale para esta sessão.
   }
 }
 
@@ -191,6 +221,13 @@ async function buscar() {
 
   falhaDeRede = false;
   cronState = corpo?.cron ?? null;
+
+  // Partida que acabou sai do overlay AGORA, sem esperar a virada do dia. O
+  // corte por dia da leitura sozinho manteria o jogo encerrado às 22h fixado a
+  // noite inteira.
+  const antes = favoritasPartida.size;
+  favoritasPartida = new Set(prunePins([...favoritasPartida], corpo?.fixtures ?? []));
+  if (favoritasPartida.size !== antes) gravarPartidas();
 
   // CONTRATO 1. Uma chamada, na ordem certa, com o estado opaco entrando e
   // saindo. `soundEnabled` é a VARIÁVEL — passar `true` aqui furaria o
@@ -381,6 +418,7 @@ function renderGrade(visiveis) {
     fav.addEventListener('click', () => {
       if (favoritasPartida.has(f.id)) favoritasPartida.delete(f.id);
       else favoritasPartida.add(f.id);
+      gravarPartidas();
       render();
     });
     cartao.append(fav);

@@ -395,6 +395,13 @@ Três regras que este projeto aprendeu na prática e que valem mais que cobertur
    Aconteceu aqui.
 5. **Mensagem de assert é promessa, e entra na revisão.** Se o código não impõe a invariante que a
    mensagem enuncia, a mensagem é mentira documentada. Descreva o caso, ou imponha a lei.
+6. **Asserção sobre texto-fonte precisa ser recortada na função sob medição.** Regex no arquivo
+   inteiro casa o bloco idêntico de outra função e fica verde pelo motivo errado. E acrescente
+   `assert.ok(recorte.length > N)`: recorte vazio, no dia em que a função for renomeada, faz o
+   `assert.ok(!recorte.includes(...))` passar por vacuidade.
 
-As duas últimas nasceram da revisão do adaptador; a versão longa, com o exemplo real, está em
-`.claude/agents/junior-dev.md`.
+As regras 4, 5 e 6 são o MESMO erro em três formas — **teste cego por construção**, que não podia
+pegar o que dizia pegar e ficava verde por isso. Não é cobertura faltando: é teste que remove a
+desconfiança em vez de criar. Antes de escrever um teste, pergunte se ele conseguiria ver o bug que
+você teme; se a resposta depender do iterador, da amostra ou do recorte, é um dos três. A versão
+longa, com os três exemplos reais, está em `.claude/agents/junior-dev.md`.

@@ -105,18 +105,31 @@ test('CONTRATO 3: nenhuma dependência e nenhum build', () => {
 test('CONTRATO 4: localStorage só para favoritas e posição do overlay', () => {
   // Espelhar snapshot, cota ou estado do cron criaria uma segunda fonte de
   // verdade que envelhece sem ninguém perceber.
+  //
+  // Três chaves, e a terceira foi decisão explícita do dev: favorita de LIGA é
+  // permanente, favorita de PARTIDA é efêmera — o jogo acaba. Prazos
+  // diferentes, chaves diferentes, e o prazo da partida é imposto em
+  // `view/pins.js`, não aqui.
+  const PERMITIDAS = new Set(['LS_FAVORITAS', 'LS_OVERLAY', 'LS_PARTIDAS']);
   const chaves = [...app.matchAll(/localStorage\.(?:getItem|setItem|removeItem)\(([^,)]+)/g)]
     .map((m) => m[1].trim());
 
-  assert.ok(chaves.length >= 3, 'o teste parou de encontrar os usos de localStorage');
+  assert.ok(chaves.length >= 4, 'o teste parou de encontrar os usos de localStorage');
   for (const chave of chaves) {
-    assert.ok(
-      chave === 'LS_FAVORITAS' || chave === 'LS_OVERLAY',
-      `localStorage usado com chave fora do contrato: ${chave}`,
-    );
+    assert.ok(PERMITIDAS.has(chave), `localStorage usado com chave fora do contrato: ${chave}`);
   }
   assert.match(app, /const LS_FAVORITAS = 'placar:favoritas'/);
   assert.match(app, /const LS_OVERLAY = 'placar:overlay'/);
+  assert.match(app, /const LS_PARTIDAS = 'placar:partidas'/);
+});
+
+test('a partida fixada é podada a cada snapshot, não só na leitura', () => {
+  // O corte por dia sozinho manteria o jogo encerrado às 22h fixado a noite
+  // inteira. `prunePins` tem de rodar no caminho do poll, com as fixtures que
+  // acabaram de chegar.
+  const buscar = app.slice(app.indexOf('async function buscar'), app.indexOf('// === render'));
+  assert.match(buscar, /prunePins\(\[\.\.\.favoritasPartida\], corpo\?\.fixtures/);
+  assert.match(buscar, /gravarPartidas\(\)/);
 });
 
 test('AUTOPLAY: soundEnabled entra como VARIÁVEL, nunca como literal', () => {
