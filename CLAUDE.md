@@ -1,9 +1,34 @@
 # placar-futebol — regras do projeto
 
-Página estática que mostra jogos de futebol ao vivo, permite favoritar, exibe um overlay flutuante
-com placar e minuto, e toca alerta sonoro quando sai gol. HTML/CSS/JS vanilla com ES modules, **sem
-build e sem dependências**, publicada no GitHub Pages, alimentada por um Cloudflare Worker com KV e
-Cron Trigger. Testes com `node --test`; rode `npm test`.
+Mostra jogos de futebol ao vivo, permite favoritar, exibe um overlay com placar e minuto, e toca
+alerta sonoro quando sai gol. Alimentado por um Cloudflare Worker com KV e Cron Trigger. Testes com
+`node --test`; rode `npm test`.
+
+`npm test` da raiz roda `test/*.test.js` e cobre **só o entregável web** — o glob não é recursivo
+e não alcança `desktop/`. Teste da casca mora em `desktop/test/` com runner próprio, invocado
+pelo `package.json` de lá. Não junte os dois: o da raiz precisa continuar rodando num clone sem
+`npm install` nenhum, que é a prova viva da tese de zero dependências.
+
+## DOIS ENTREGÁVEIS, e a restrição vale para UM
+
+Isto governa a leitura do arquivo inteiro e por isso vem antes de tudo. Até 2026-09-07 o projeto era
+uma coisa só, e várias regras abaixo foram escritas como se fossem globais. **Onde uma restrição
+disser "o projeto", leia "o entregável web"** — as exceções estão nomeadas aqui.
+
+1. **Página web** — portfólio. HTML/CSS/JS vanilla com ES modules, **sem build e sem dependências**,
+   publicada no GitHub Pages. `index.html`, `style.css`, `app.js`, `src/`.
+2. **Casca desktop** — uso pessoal. Electron em `desktop/`, com `package.json` e lockfile próprios,
+   para o overlay ser uma JANELA DO SISTEMA: arrastável, redimensionável e acima da barra de
+   tarefas. `div` em navegador não faz isso e nunca ia fazer.
+
+**O `package.json` da RAIZ continua com `dependencies: {}` e `devDependencies: {}`.** Não é higiene:
+é o que mantém a tese do entregável 1 verificável, e **está preso por teste** —
+`test/zero-dependencias.test.js` falha se a raiz ganhar dependência ou se um arquivo fora de
+`desktop/` importar pacote. Prosa não verifica; a guarda verifica.
+
+O que a casca **não** muda, e é o ponto de ter escolhido casca em vez de reescrita: `src/core/`
+inteiro com seus testes, o adaptador, o Worker, o cron, o KV e o orçamento de cota. A chave **não**
+pode morar no binário — ver "Orçamento de cota" — e é o cron que protege a cota.
 
 ## Relação com o `CLAUDE.md` global
 
@@ -40,7 +65,14 @@ Toda captura nova entra no `.gitignore` **antes** de qualquer `git add`. As quat
 lá; a quinta é responsabilidade de quem a criar.
 
 A chave de produção é **secret do painel do Cloudflare**. Nunca no código, nunca no cliente, nunca
-num log, nunca num commit, e o `wrangler.toml` versionado nunca a contém. O README descreve o
+num log, nunca num commit, e o `wrangler.toml` versionado nunca a contém.
+
+**"Nunca no cliente" passou a incluir um BINÁRIO, e isso APERTA a regra em vez de afrouxá-la.** Um
+app desktop é o pior cliente possível para guardar segredo: o usuário tem o arquivo, e `asar` é
+empacotamento, não cifra — `npx asar extract` devolve a fonte. Não existe variável de ambiente,
+build step nem `.env` do `desktop/` que torne isso aceitável. A casca lê `/api/live`, que é
+público e não precisa de chave; se um dia algum caminho da casca parecer precisar da chave, o
+caminho está errado, não a regra. O README descreve o
 cadastro pelo painel e jamais pede que alguém cole a chave em arquivo do repositório.
 
 ## NENHUM SUBAGENTE COMMITA
@@ -165,13 +197,37 @@ O estado devolvido por `applySnapshot` é opaco: sai dele, volta para ele. Carre
 registro de alertados juntos justamente para que não exista caminho que emita um evento sem gravar a
 chave.
 
+## UM DONO SÓ POR INSTÂNCIA DO APP — e o overlay é projeção
+
+Consequência direta do parágrafo acima, e a regra que a casca desktop torna fácil de violar sem
+perceber. **Exatamente um lugar, por instância do app, faz o poll e chama `applySnapshot`.**
+
+Na web isso é trivial: uma aba, um `app.js`. No desktop são duas janelas, e a tentação é o overlay
+carregar o mesmo `app.js` "porque já funciona". Não pode. A janela **principal** é a dona; a janela
+do overlay **não importa nada de `src/core/`, não faz `fetch` e não tem `coreState`** — recebe
+por IPC o que já foi decidido.
+
+**O motivo não é economia de requisição, é correção.** O estado de `applySnapshot` carrega o
+registro `alerted`. Duas instâncias são dois registros: cada uma preserva a invariante
+internamente — nenhuma emite evento sem gravar a chave — e o produto toca **dois sons para um gol**.
+A invariante por instância continua verdadeira enquanto a do produto quebra, e é por isso que
+nenhum teste unitário pega: cada metade está certa.
+
+Corolário do `tocarGol()`: ele mora na janela DONA, junto de quem decidiu. No overlay, o som
+dependeria de a janela do overlay estar viva — e ela é justamente a que o usuário fecha quando quer
+a tela limpa.
+
+Regra geral, que vale além do Electron: **quando um estado existe para fechar um furo, duplicá-lo
+reabre o furo em um nível acima, onde os testes daquele estado não olham.**
+
 ## Orçamento de cota
 
 A API-Football free dá **100 requisições/dia**, globais da chave, com reset às **00:00 UTC = 21:00
 BRT**. Não é por cliente: é a chave inteira.
 
-- **O navegador NUNCA chama a API upstream.** O cron do Worker busca, grava snapshot no KV, o
-  navegador lê o KV. Uma aba pollando a 60s consumiria a cota do dia inteiro em menos de um jogo.
+- **NENHUM CLIENTE chama a API upstream — web ou desktop.** O cron do Worker busca, grava snapshot
+  no KV, o cliente lê o KV. O renderer do Electron **é** um navegador e não abre exceção: a casca
+  lê `/api/live` exatamente como a aba, e o processo `main` também não fala com a upstream. Uma aba pollando a 60s consumiria a cota do dia inteiro em menos de um jogo.
   Qualquer código que faça o cliente falar com a API-Football é erro bloqueante.
 - **Reserva de 10 requisições/dia para a agenda**, intocável pelo poll ao vivo.
 - **O cron só grava no KV quando de fato buscou upstream.** Nada de heartbeat: o free tier do KV dá
@@ -347,17 +403,29 @@ representativo. Versionada, a lista em JSON fica revisável no diff, e o teste p
 pergunta que a bateria não responde sobre si mesma — se ela ainda sabe detectar um mutante que
 deveria matar, ou se está verde porque parou de rodar.
 
-**Não há pre-commit hook neste projeto, e não há lockfile.** O projeto tem `dependencies: {}` e
-`devDependencies: {}` por restrição dura — nada a travar. Se um hook for adicionado depois, o que
-faz sentido guardar aqui não é lockfile: é (a) recusar conteúdo staged que case com padrão de
-chave, e (b) recusar commit que introduza qualquer dependência, que é a restrição do projeto mais
-fácil de violar sem perceber.
+**Não há pre-commit hook neste projeto. Na RAIZ não há lockfile; em `desktop/` há.** A raiz tem
+`dependencies: {}` e `devDependencies: {}` por restrição dura — nada a travar. A casca tem
+Electron e trava normalmente, e o lockfile dela é versionado como o de qualquer app.
+
+Se um hook for adicionado depois, o que faz sentido guardar aqui é (a) recusar conteúdo staged que
+case com padrão de chave, e (b) recusar commit que introduza dependência **na raiz** — que é a
+restrição mais fácil de violar sem perceber. **O escopo em (b) não é detalhe:** escrito como
+"qualquer dependência", o hook bloquearia todo trabalho legítimo no `desktop/`, seria desligado
+por atrapalhar, e aí não protegeria mais a raiz também. Guarda que atrapalha o caminho legítimo é
+guarda que alguém remove.
 
 ## O que do PR 3 ficou SEM teste automatizado
 
-Decisão do dev, e a razão é dura: **nenhuma dependência nova.** Cobertura de DOM exigiria um test
-runner de browser, e a restrição de zero dependências é a premissa que sustenta GitHub Pages, zero
-build e o projeto inteiro. Trocá-la por cobertura de DOM seria vender a tese por um teste.
+Decisão do dev, e a razão é dura: **nenhuma dependência nova no ENTREGÁVEL WEB.** Cobertura de DOM
+exigiria um test runner de browser, e a restrição de zero dependências é a premissa que sustenta
+GitHub Pages, zero build e o entregável 1. Trocá-la por cobertura de DOM seria vender a tese por um
+teste.
+
+**A casca desktop NÃO afrouxa isto, e a distinção é fina o bastante para merecer letra:** `desktop/`
+tem Electron e lockfile, mas Electron é a casca, não um test runner do `app.js`. Usar o Electron
+já instalado para rodar teste de DOM da página traria a cobertura por uma porta lateral — e a
+página passaria a ser testada só num ambiente que o entregável 1 não tem. Se um dia a cobertura de
+DOM vier, ela paga o preço no entregável 1 ou não vale.
 
 O que se fez em vez disso: **toda decisão saiu do `app.js`** e virou função pura testada —
 `src/core/notice.js` (precedência da faixa), `src/view/copy.js` (redação) e `src/view/filter.js`
@@ -370,13 +438,29 @@ chamado, não que a tela renderize certo.
 **Fica sem verificação automatizada, e precisa de olho humano a cada mudança no `app.js`:**
 
 1. O som tocar de fato depois do gesto de liberação (e **não** tocar antes).
-2. O arrasto do overlay e a persistência da posição entre recarregamentos.
+2. **WEB:** o arrasto do overlay-`div` e a persistência da posição em `LS_OVERLAY` entre
+   recarregamentos.
 3. A animação de gol reiniciar em dois gols seguidos na mesma partida.
 4. Layout responsivo e a faixa continuar legível em tela estreita.
 5. CORS de verdade contra o Worker publicado — o teste do Worker usa `Response` sintética.
 
+**Superfície NOVA da casca desktop, sem teste, acrescentada em 2026-09-07:**
+
+6. **DESKTOP:** o arrasto e o redimensionamento da janela do overlay, e a persistência de
+   `getBounds`/`setBounds` entre SESSÕES do app. **Não é o item 2 noutro lugar: é outro
+   mecanismo.** O item 2 é `div`, CSS e `localStorage` dentro de uma viewport; este é geometria
+   de janela do SO, persistida pela casca, com monitor que muda de resolução e monitor que some.
+   Confundi-los faria "já está coberto" valer para o lado que não está.
+7. **DESKTOP:** o overlay ficar de fato acima da barra de tarefas
+   (`setAlwaysOnTop(true, 'screen-saver')`), e continuar acima depois de outro app pedir foco.
+8. **DESKTOP:** o poll continuar rodando com a janela principal escondida — é o que
+   `backgroundThrottling: false` compra, e é invisível até falhar tarde.
+9. **DESKTOP:** a porta de volta pelo tray, incluindo o caso em que o tray não aparece.
+
 Se um dia o projeto aceitar uma dependência de teste, é este bloco que ela paga. Enquanto não
-aceitar, **este bloco é o inventário honesto do buraco**, não um TODO a ignorar.
+aceitar, **este bloco é o inventário honesto do buraco**, não um TODO a ignorar. **A casca não
+encolheu o buraco: aumentou.** Um entregável novo que não acrescentasse linha nenhuma aqui seria
+sinal de que ninguém olhou, não de que veio pronto.
 
 ## O que um mock pode forjar, e o que não pode
 

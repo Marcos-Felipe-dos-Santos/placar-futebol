@@ -126,9 +126,19 @@ test('o override de origem passa por resolveApiUrl, não por checagem solta', ()
 });
 
 test('CONTRATO 3: nenhuma dependência e nenhum build', () => {
+  // Este teste é dono do `package.json` da RAIZ. A varredura da ÁRVORE inteira,
+  // com a isenção de `desktop/`, mora em `zero-dependencias.test.js` —
+  // separados de propósito, para não existirem duas cópias da mesma asserção
+  // divergindo. Aqui: o manifesto e o `app.js`. Lá: todo o resto.
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-  assert.deepEqual(pkg.dependencies ?? {}, {}, 'apareceu dependência de produção');
-  assert.deepEqual(pkg.devDependencies ?? {}, {}, 'apareceu dependência de desenvolvimento');
+  for (const campo of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+    // Os quatro, não só os dois: `peerDependencies` e `optionalDependencies`
+    // também fazem `npm install` baixar coisa, e passavam batido.
+    assert.deepEqual(
+      Object.keys(pkg[campo] ?? {}), [],
+      'apareceu `' + campo + '` na raiz — dependência de casca vai em desktop/package.json',
+    );
+  }
 
   // Import de pacote (sem `./` nem `../`) significaria node_modules, e
   // node_modules significaria build para o GitHub Pages.
