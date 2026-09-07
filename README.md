@@ -53,9 +53,40 @@ escreveu. **Onde um número não foi medido, está escrito que não foi.**
 - **A agenda de fallback (football-data.org) cobre só 12 competições**, e com placar atrasado.
 - **A página é atualizada a cada 30s**, mas isso é a leitura do KV — não o intervalo da busca
   upstream, que é maior. Ver a latência acima.
-- **O que não tem teste automatizado está listado**, não escondido: comportamento de DOM, som
-  depois do gesto de liberação, arrasto do overlay, CORS real, e a superfície nova da casca
-  desktop. A lista completa, com o motivo de cada item, está no `CLAUDE.md`.
+
+## O que ficou sem verificação automatizada
+
+Listado, não escondido. A causa é uma decisão de projeto: cobertura de DOM exigiria um test runner
+de browser, e a restrição de zero dependências é a premissa que sustenta o Pages, o zero build e o
+entregável web inteiro. Trocá-la por cobertura de DOM seria vender a tese por um teste.
+
+O que se fez em vez disso foi **tirar toda decisão do `app.js`** — precedência de aviso, redação,
+filtro e ordenação viraram funções puras testadas, e o `app.js` ficou burro: lê estado, chama
+função pura, escreve no DOM. Há um teste que prova a **ausência de caminho proibido** lendo a
+fonte. Ele não prova comportamento, e a diferença importa: prova que o núcleo não é sequenciado na
+mão, não que a tela renderize certo.
+
+Fica dependendo de olho humano:
+
+**Página web**
+
+1. O som tocar depois do gesto de liberação — e **não** tocar antes.
+2. O arrasto do overlay e a persistência da posição entre recarregamentos.
+3. A animação de gol reiniciar em dois gols seguidos na mesma partida.
+4. Layout responsivo, e a faixa de diagnóstico continuar legível em tela estreita.
+5. CORS real contra o Worker publicado — o teste do Worker usa `Response` sintética.
+
+**Casca desktop**
+
+6. Arrasto e redimensionamento da janela *frameless*, e a persistência da geometria entre sessões.
+   Não é o item 2 em outro lugar: lá é `div` e `localStorage`; aqui é geometria de janela do
+   sistema operacional, com monitor que muda de resolução e monitor que some.
+7. O overlay permanecer acima da barra de tarefas depois de outro app pedir foco.
+8. O poll continuar rodando com a janela principal escondida.
+9. A porta de volta pela bandeja, inclusive quando o ícone não aparece.
+
+Se um dia o projeto aceitar uma dependência de teste, é esta lista que ela paga. Enquanto não
+aceitar, ela é o **inventário honesto do buraco** — não um TODO a ignorar.
 
 ## Rodar
 
