@@ -378,6 +378,50 @@ chamado, não que a tela renderize certo.
 Se um dia o projeto aceitar uma dependência de teste, é este bloco que ela paga. Enquanto não
 aceitar, **este bloco é o inventário honesto do buraco**, não um TODO a ignorar.
 
+## O que um mock pode forjar, e o que não pode
+
+**A régua: entrada do que se OBSERVA pode ser forjada; dado que o MECANISMO OBSERVADO PROCESSA,
+não.** Vale para mock, fixture, stub e qualquer dado de mentira que este projeto venha a produzir.
+
+O caso que a ensinou: `tools/make-mock.mjs` reetiquetava 12 partidas da captura para as ligas da
+semente, porque `live-pico.json` não tem nenhuma liga prioritária ao vivo e sem isso a grade nasce
+vazia. O resultado foi cartão de "Brasileirão Série A" sobre Aalesund x Start, e — pior que o
+absurdo visível — **um mock construído para exercitar o filtro por liga, falsificando exatamente o
+campo sobre o qual o filtro opera.** Quem olhasse a tela não estaria olhando o filtro; estaria
+olhando o falsificador. O sintoma que denunciou foi um contador `(3)` idêntico em todos os chips,
+que era só 12 dividido por 4.
+
+No mesmo arquivo continuam sintéticos, e corretamente, `discarded`, `consecutiveFailures`,
+`quotaRemaining`, `reason` e o deslocamento de `fetchedAtMs`: são as **entradas** da faixa de
+diagnóstico, que é o que se quer observar. Forjá-las é o propósito da ferramenta. `leagueId` é o
+**dado de trabalho** do mecanismo, e por isso é intocável. A diferença não é de grau.
+
+Corolário prático, que custou dois turnos para aparecer: **quando o dado real não produz o estado
+que você queria ver, o conserto é uma captura melhor, não um dado melhorado.** Aqui a consequência
+foi assumida — a grade padrão nasce vazia, e um cenário com liga prioritária espera uma captura com
+Brasileirão no ar. Grade vazia é a verdade do dado; "nenhum jogo de interesse agora" é informação.
+
+Um segundo corolário, sobre onde o aviso mora: **condição de visualização faz parte do anúncio.** A
+faixa `vazio` não sai do snapshot — sai de `visibleCount`, que vem das favoritas do navegador. Um
+cenário que anuncia "(nenhuma faixa)" sem dizer sob que filtro isso vale promete o que o arquivo
+sozinho não entrega. Por isso a condição está na saída de cada execução, no `ajuda()` **e** na
+asserção do teste.
+
+**É a mesma família de duas lições que já estão neste arquivo, e as três se leem juntas:**
+
+- *"Uma regra de economia (não escreva) apaga a observabilidade do caminho que ela suprime"* — o
+  registro da instrução impossível, na seção "Orçamento de cota". Lá, a restrição destruiu o
+  diagnóstico do caso que ela mesma criava.
+- *"Quando a omissão é o modo de falha, enumere o lado que não deve crescer"* — a invariante diária,
+  na mesma seção. Lá, listar o lado errado deixava o campo novo passar em silêncio.
+- Aqui, a conveniência de ter a tela cheia destruiu o que a tela servia para mostrar.
+
+O que as três compartilham: **uma decisão local e defensável apaga, em outro lugar, exatamente a
+coisa que ela deveria ter deixado visível.** Nenhuma foi descuido — as três tinham justificativa boa
+no ponto em que foram tomadas, e só apareceram quando alguém foi usar o resultado. A pergunta que
+elas deixam, e que vale fazer antes de qualquer atalho: **o que este atalho torna impossível de
+ver?**
+
 ## Disciplina de teste
 
 Três regras que este projeto aprendeu na prática e que valem mais que cobertura:
