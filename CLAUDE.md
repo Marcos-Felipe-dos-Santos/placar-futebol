@@ -491,7 +491,7 @@ cenário que anuncia "(nenhuma faixa)" sem dizer sob que filtro isso vale promet
 sozinho não entrega. Por isso a condição está na saída de cada execução, no `ajuda()` **e** na
 asserção do teste.
 
-**É a mesma família de duas lições que já estão neste arquivo, e as três se leem juntas:**
+**É a mesma família de outras lições deste arquivo, e elas se leem juntas** — ver também "QUAL lado enumerar", logo abaixo:
 
 - *"Uma regra de economia (não escreva) apaga a observabilidade do caminho que ela suprime"* — o
   registro da instrução impossível, na seção "Orçamento de cota". Lá, a restrição destruiu o
@@ -505,6 +505,40 @@ coisa que ela deveria ter deixado visível.** Nenhuma foi descuido — as três 
 no ponto em que foram tomadas, e só apareceram quando alguém foi usar o resultado. A pergunta que
 elas deixam, e que vale fazer antes de qualquer atalho: **o que este atalho torna impossível de
 ver?**
+
+## QUAL lado enumerar — o critério, não a regra decorada
+
+Duas seções deste arquivo mandam enumerar o lado que **não** deve crescer: a invariante diária
+(`__CAMPOS_NAO_DIARIOS`) e a guarda de dependências (`ISENTOS`). Em 2026-09-07 o PR 6a produziu um
+caso que aponta para o **lado oposto**, e é por isso que esta seção existe: a regra decorada teria
+levado ao erro.
+
+**O critério verdadeiro nunca foi "enumere os não-X". É: `qual lado, esquecido, falha em
+silêncio?`** Enumere aquele. As duas seções antigas apontam para um lado porque, nelas, o
+esquecimento silencioso mora lá. Quando o dano muda de sinal, o critério aponta para o outro lado,
+e continua sendo o mesmo critério.
+
+O caso: `desktop/src/protocolo.js` serve arquivos do disco para a página, via `placar://`. A
+primeira versão servia **qualquer arquivo sob a raiz** e barrava só o que escapasse com `..`.
+
+- Enumerar os PROIBIDOS: um segredo novo no repositório passa a ser servido sem que nada acuse.
+  Silencioso e catastrófico.
+- Enumerar os PERMITIDOS: um arquivo novo do entregável web dá 404 até alguém classificá-lo.
+  Barulhento e inofensivo — a página não carrega e quem mexeu vê na hora.
+
+Então ali a lista versionada é a dos **permitidos**, ao contrário das outras duas. Não é
+inconsistência; é o critério aplicado.
+
+**E a lição de segunda ordem, que vale mais que a primeira:** a versão errada não foi descuido de
+segurança. Ela guardava contra travessia de diretório, que é a ameaça que todo mundo conhece — e a
+ameaça real era outra, porque **`new URL()` normaliza o `..` antes de qualquer guarda ver**.
+`placar://app/../.env` chega ao handler como `/.env` e resolve DENTRO da raiz. A guarda estava
+certa contra o ataque errado.
+
+Daí a pergunta que fica, e que é a versão dura de "o que este atalho torna impossível de ver?":
+**contra o que exatamente esta guarda protege, e o que ela deixa passar por não ser o caso que eu
+imaginei?** Quem escreveu a primeira versão sabia de travessia. Ninguém tinha perguntado o que
+sobrava depois da normalização.
 
 ## Disciplina de teste
 
