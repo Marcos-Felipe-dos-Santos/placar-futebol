@@ -25,3 +25,12 @@ mock-api.json
 
 # Dependências (o projeto não usa build, mas ferramentas locais podem criar)
 node_modules/
+
+live-*.json
+
+.env*
+.dev.vars*
+live-*.json
+agenda-*.json
+leagues-*.json
+mock-*.json
