@@ -22,11 +22,30 @@
  * - **Real:** as partidas, os nomes de time, os minutos e os status vêm de
  *   `live-pico.json` — captura de `GET /fixtures?live=all` em horário de pico,
  *   89 partidas, 2026-09-04.
- * - **SINTÉTICO, e o script avisa em toda execução:** as ligas de algumas
- *   partidas são reetiquetadas para a semente. A captura não tem nenhuma liga
- *   prioritária ao vivo, então sem isso o filtro padrão devolve zero e a grade
- *   nasce vazia — impossível olhar os cartões. O cenário `vazio` é o único que
- *   NÃO reetiqueta, porque lá o vazio é o ponto.
+ *   Isso inclui o `leagueId`, que é PRESERVADO da captura.
+ * - **Sintético:** só o que descreve o ESTADO DA BUSCA — `discarded`,
+ *   `consecutiveFailures`, `quotaRemaining`, `reason` e o deslocamento de
+ *   `fetchedAtMs`. São as entradas do que se quer observar (a faixa), e
+ *   forjá-las é o propósito da ferramenta.
+ *
+ * ## A linha: por que `leagueId` NÃO pode ser forjado
+ *
+ * Uma versão anterior reetiquetava 12 partidas para as ligas da semente, para
+ * os chips terem conteúdo. Estava errado, e o erro tem forma geral: **o filtro
+ * por liga é o mecanismo que se quer olhar, e `leagueId` é o dado sobre o qual
+ * ele opera.** Falsificá-lo não deixa o dev olhando o filtro — deixa o dev
+ * olhando o falsificador. Produziu cartões com "Brasileirão Série A" sobre
+ * Aalesund x Start, e o contador `(3)` idêntico em todo chip, que era só
+ * 12 partidas divididas por 4 ligas.
+ *
+ * `discarded: 7` continua sintético e está certo que continue: ele é entrada
+ * do que se observa, não o dado que o mecanismo observado processa.
+ *
+ * A consequência é assumida: **esta captura não tem NENHUMA liga da semente**,
+ * então o filtro padrão devolve zero e a grade nasce vazia. Isso é a verdade
+ * do dado. Para ver cartões, favorite uma liga real (o script diz qual) ou use
+ * "Ver todas as ligas". Um cenário com liga prioritária exige uma captura com
+ * Brasileirão no ar, que ainda não existe.
  *
  * ## Uso
  *
@@ -46,20 +65,13 @@ import { fileURLToPath } from 'node:url';
 import { toFixturesWithReport } from '../src/adapters/apiFootball.js';
 import { buildSnapshot, toPublicCronState } from '../src/core/snapshot.js';
 import { DEFAULT_LEAGUE_IDS } from '../src/core/leagues.js';
+import { FRESH_MAX_MS } from '../src/core/staleness.js';
 
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CAPTURA = path.join(RAIZ, 'live-pico.json');
 const SAIDA = path.join(RAIZ, 'mock-api.json');
 
 const MIN = 60_000;
-
-/** Nomes só para a grade ficar legível; os ids é que importam para o filtro. */
-const NOMES_SEMENTE = {
-  71: 'Brasileirão Série A',
-  13: 'CONMEBOL Libertadores',
-  11: 'CONMEBOL Sudamericana',
-  73: 'Copa do Brasil',
-};
 
 /**
  * Cada cenário devolve os ajustes sobre a base. `notice` documenta qual código
@@ -69,6 +81,9 @@ const CENARIOS = {
   saudavel: {
     notice: '(nenhuma faixa)',
     descricao: 'Dado fresco, completo, cron saudável. A faixa NÃO deve aparecer.',
+    // Único cenário cuja faixa depende da grade ter conteúdo: sem favorita,
+    // `visibleCount` é 0 e `chooseNotice` devolve `vazio` — corretamente.
+    comFavorita: true,
     ajustes: () => ({}),
   },
   'sem-jogo': {
@@ -110,9 +125,13 @@ const CENARIOS = {
   },
   vazio: {
     notice: 'vazio',
-    descricao: 'Tudo saudável e nenhuma partida de interesse. A grade vazia é AFIRMADA.',
-    // Único cenário que não reetiqueta: aqui o vazio é o ponto.
-    ajustes: () => ({ semReetiquetar: true }),
+    descricao: 'Tudo saudável e nenhuma liga de interesse ao vivo. O vazio é AFIRMADO.',
+    // MESMO ARQUIVO que `saudavel` — e isso é honesto, não um descuido: a
+    // faixa `vazio` depende de `visibleCount`, que sai das FAVORITAS do
+    // navegador, não do snapshot. Os dois cenários diferem em como se olha,
+    // não no que se serve. Por isso este exige favorita nenhuma.
+    comFavorita: false,
+    ajustes: () => ({}),
   },
 };
 
@@ -121,8 +140,19 @@ function ajuda() {
   console.log('cenarios:');
   const largura = Math.max(...Object.keys(CENARIOS).map((k) => k.length));
   for (const [nome, c] of Object.entries(CENARIOS)) {
-    console.log(`  ${nome.padEnd(largura)}  ${c.notice.padEnd(28)} ${c.descricao}`);
+    // A condicao de visualizacao entra AQUI tambem, e nao so na saida de cada
+    // execucao: a ajuda e a primeira coisa que o dev le, e um cenario listado
+    // como "(nenhuma faixa)" sem dizer que isso exige favorita promete o que o
+    // arquivo sozinho nao entrega.
+    const marca = c.comFavorita ? ' [pede favorita]' : '';
+    console.log(`  ${nome.padEnd(largura)}  ${(c.notice + marca).padEnd(44)} ${c.descricao}`);
   }
+  console.log('');
+  console.log('Esta captura tem ZERO partidas de liga da semente, entao o filtro padrao');
+  console.log('devolve grade vazia. Isso e a verdade do dado, nao defeito: para ver');
+  console.log('cartoes, favorite uma liga real (cada execucao diz qual) ou clique');
+  console.log('"Ver todas as ligas". Um cenario com liga prioritaria exige uma captura');
+  console.log('com Brasileirao no ar, que ainda nao existe.');
   console.log('\nA faixa `sem-dado` nao sai daqui: ela aparece quando o fetch FALHA.');
   console.log('Para ve-la, aponte a pagina para um arquivo que nao existe:');
   console.log('  index.html?api=./nao-existe.json');
@@ -156,19 +186,8 @@ function main() {
   const agora = Date.now();
   const a = CENARIOS[cenario].ajustes(agora);
 
-  let fixtures = relatorio.fixtures;
-  let reetiquetadas = 0;
-
-  if (!a.semReetiquetar) {
-    // SINTETICO. A captura nao tem liga prioritaria ao vivo, entao sem isto o
-    // filtro padrao devolve zero e a grade nasce vazia em todo cenario.
-    fixtures = fixtures.map((f, i) => {
-      if (i >= 12) return f;
-      const id = DEFAULT_LEAGUE_IDS[i % DEFAULT_LEAGUE_IDS.length];
-      reetiquetadas += 1;
-      return { ...f, leagueId: String(id), leagueName: NOMES_SEMENTE[id] };
-    });
-  }
+  // `leagueId` VEM DA CAPTURA, intocado. Ver "A linha" no topo do arquivo.
+  const fixtures = relatorio.fixtures;
 
   const fetchedAtMs = a.fetchedAtMs ?? agora;
   const discarded = a.discarded ?? relatorio.discarded;
@@ -204,10 +223,60 @@ function main() {
   console.log(`cenario:  ${cenario}`);
   console.log(`faixa:    ${c.notice}`);
   console.log(`          ${c.descricao}`);
-  console.log(`fixtures: ${fixtures.length} reais da captura` + (reetiquetadas
-    ? `, ${reetiquetadas} com a LIGA REETIQUETADA para a semente (sintetico)`
-    : ' — nenhuma reetiquetada, o filtro padrao vai devolver zero'));
+  console.log(`fixtures: ${fixtures.length} reais da captura, leagueId PRESERVADO`);
+
+  // A liga mais numerosa da captura: e o que o dev favorita para ver a grade
+  // com dado REAL. Sai daqui, e nao de um id fixo no teste, para continuar
+  // certo se a captura mudar.
+  const porLiga = new Map();
+  for (const fx of fixtures) {
+    const atual = porLiga.get(fx.leagueId);
+    if (atual) atual.n += 1;
+    else porLiga.set(fx.leagueId, { n: 1, nome: fx.leagueName || fx.leagueId });
+  }
+  // Desempate pelo id: sem ele duas ligas empatadas trocariam de lugar entre
+  // execucoes e o teste leria uma sugestao diferente da que o dev viu.
+  const ranking = [...porLiga.entries()].sort(
+    (x, y) => y[1].n - x[1].n || x[0].localeCompare(y[0]),
+  );
+  const semente = new Set(DEFAULT_LEAGUE_IDS.map(String));
+  const daSemente = fixtures.filter((fx) => semente.has(fx.leagueId)).length;
+
+  console.log(`ligas:    ${porLiga.size} distintas; ${daSemente} partida(s) de liga da SEMENTE`);
+
+  // A CONDICAO DE VISUALIZACAO faz parte do anuncio. A faixa `vazio` nao sai
+  // do snapshot: sai de `visibleCount`, que depende das favoritas do
+  // navegador. Anunciar a faixa sem dizer sob que filtro ela vale seria
+  // prometer o que o arquivo sozinho nao entrega.
+  const [idSug, sug] = ranking[0];
+  if (c.comFavorita) {
+    console.log('favorite: liga ' + idSug + ' "' + sug.nome + '" (' + sug.n + ' partidas) — SEM ela a faixa e `vazio`.');
+  } else {
+    console.log(`favorite: nenhuma — este cenario vale com o filtro padrao, sem favorita.`);
+  }
   console.log(`idade:    ${Math.round((agora - fetchedAtMs) / 1000)}s`);
+
+  // VALIDADE. `fetchedAtMs` e absoluto no instante da geracao e a pagina o
+  // compara com o relogio, entao os cenarios frescos apodrecem em
+  // FRESH_MAX_MS. O que torna isso pior que um incomodo: um `saudavel`
+  // vencido fica IDENTICO a um `sem-jogo` — medido, os corpos so diferem no
+  // timestamp —, entao a pagina nao mente por bug, ela relata com precisao um
+  // estado que o arquivo de fato descreve. Nada na tela denuncia a troca.
+  //
+  // Distinguir os dois exigiria um campo no corpo, e o corpo tem de continuar
+  // sendo o envelope EXATO de /api/live — e faria a producao ler um campo que
+  // so o mock escreve. Entao o aviso sai AQUI, na ferramenta, e nao depende de
+  // o dev lembrar da regua: regra que depende de lembrar nao e regra.
+  const venceEmMs = fetchedAtMs + FRESH_MAX_MS;
+  if (venceEmMs > agora) {
+    const hora = new Date(venceEmMs).toLocaleTimeString("pt-BR");
+    const restam = Math.round((venceEmMs - agora) / 1000);
+    console.log(`validade: ate ${hora} — ${restam}s a partir de agora.`);
+    console.log("          DEPOIS DISSO a faixa vira `parado-sem-jogo` sozinha, e este");
+    console.log("          arquivo fica indistinguivel do cenario `sem-jogo`. Regenere.");
+  } else {
+    console.log("validade: nao vence — nasceu parado, a faixa nao muda com o relogio.");
+  }
   console.log(`cron:     ${cron === null ? 'null (desconhecido)' : JSON.stringify(cron)}`);
   console.log(`escrito:  ${path.basename(saida)} (${(JSON.stringify(corpo).length / 1024).toFixed(0)} KB)`);
   console.log('\nabra com:  python -m http.server 8080');

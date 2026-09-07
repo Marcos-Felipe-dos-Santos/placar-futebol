@@ -6,6 +6,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { chooseNotice } from '../src/core/notice.js';
 import { visibleFixtures } from '../src/view/filter.js';
+import { toFixturesWithReport } from '../src/adapters/apiFootball.js';
+import { DEFAULT_LEAGUE_IDS } from '../src/core/leagues.js';
 
 /**
  * O GERADOR DE MOCK CUMPRE O QUE PROMETE.
@@ -51,10 +53,18 @@ test('o gerador entrega a faixa que cada cenário anuncia', { skip: temCaptura ?
 
   try {
     for (const [cenario, esperado] of Object.entries(PROMESSAS)) {
-      execFileSync(process.execPath, ['tools/make-mock.mjs', cenario, tmp], { stdio: 'pipe' });
+      const saida = execFileSync(process.execPath, ['tools/make-mock.mjs', cenario, tmp], { encoding: 'utf8' });
       const corpo = JSON.parse(fs.readFileSync(tmp, 'utf8'));
 
-      const visiveis = visibleFixtures({ fixtures: corpo.fixtures, favorites: [] });
+      // A CONDIÇÃO DE VISUALIZAÇÃO sai do próprio anúncio, não de um id fixo.
+      // A faixa `vazio` não vem do snapshot — vem de `visibleCount`, que sai
+      // das favoritas do navegador. Um teste que assumisse `favorites: []`
+      // para todo cenário mediria uma condição que o gerador não anunciou, e
+      // `saudavel` falharia por um motivo que não é defeito dele.
+      const pedeFavorita = /favorite: liga (\S+) /.exec(saida);
+      const favoritas = pedeFavorita ? [pedeFavorita[1]] : [];
+
+      const visiveis = visibleFixtures({ fixtures: corpo.fixtures, favorites: favoritas });
       const notice = chooseNotice({
         nowMs: Date.now(),
         snapshot: corpo,
@@ -65,8 +75,17 @@ test('o gerador entrega a faixa que cada cenário anuncia', { skip: temCaptura ?
       assert.equal(
         notice === null ? null : notice.code,
         esperado,
-        `cenário "${cenario}" anuncia ${esperado} e produz ${notice?.code ?? null}`,
+        `cenário "${cenario}" anuncia ${esperado} e produz ${notice?.code ?? null}`
+        + ` (favoritas: ${JSON.stringify(favoritas)})`,
       );
+
+      // CONTROLE POSITIVO da condição anunciada: quando o gerador pede uma
+      // favorita, ela tem de MUDAR a grade. Sem isto o `exec` poderia casar
+      // uma liga sem partida nenhuma e o teste passaria por vacuidade, com a
+      // grade vazia dos dois jeitos.
+      if (pedeFavorita) {
+        assert.ok(visiveis.length > 0, `a favorita anunciada em "${cenario}" não encheu a grade`);
+      }
     }
   } finally {
     fs.rmSync(tmp, { force: true });
@@ -104,4 +123,84 @@ test('o gerador recusa cenário desconhecido em vez de inventar um', { skip: tem
     () => execFileSync(process.execPath, ['tools/make-mock.mjs', 'nao-existe'], { stdio: 'pipe' }),
     'cenário inventado gerou mock em vez de erro',
   );
+});
+
+/**
+ * A VALIDADE ANUNCIADA SEPARA OS DOIS TIPOS DE CENÁRIO.
+ *
+ * Os mocks gravam `fetchedAtMs` absoluto, e a página o compara com o relógio:
+ * um cenário fresco vira `parado-sem-jogo` sozinho depois de `FRESH_MAX_MS`.
+ * O gerador avisa disso na saída — e o aviso é promessa, como o da faixa.
+ *
+ * O par positivo/negativo é o ponto: se o teste só conferisse que `saudavel`
+ * anuncia prazo, ele continuaria verde com um gerador que imprimisse o mesmo
+ * prazo para TODO cenário, inclusive os que nasceram parados e não vencem.
+ */
+test('a saída separa cenário que vence de cenário que não vence', { skip: temCaptura ? false : motivo }, () => {
+  const tmp = path.join(os.tmpdir(), `mock-validade-${process.pid}.json`);
+
+  try {
+    // Positivo: nasce fresco, logo tem prazo — e o prazo é uma hora concreta.
+    const fresco = execFileSync(process.execPath, ['tools/make-mock.mjs', 'saudavel', tmp], { encoding: 'utf8' });
+    assert.match(fresco, /validade: ate \d{2}:\d{2}:\d{2} — \d+s a partir de agora\./,
+      'cenário fresco não anunciou a hora em que vence');
+    assert.match(fresco, /Regenere\./, 'anunciou o prazo sem dizer o que fazer quando vencer');
+
+    // Negativo: nasce parado 40 min atrás, logo NÃO vence — a faixa
+    // `parado-quebrado` que ele existe para mostrar não muda com o relógio.
+    const parado = execFileSync(process.execPath, ['tools/make-mock.mjs', 'quebrado', tmp], { encoding: 'utf8' });
+    assert.match(parado, /validade: nao vence/, 'cenário que nasceu parado anunciou prazo que não tem');
+    assert.doesNotMatch(parado, /Regenere\./, 'mandou regenerar um mock que não vence');
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+});
+
+/**
+ * O MOCK NÃO INVENTA `leagueId`.
+ *
+ * Uma versão anterior do gerador reetiquetava 12 partidas para as ligas da
+ * semente, para os chips terem conteúdo. O resultado foi cartão de
+ * "Brasileirão Série A" sobre Aalesund x Start — e, pior que o absurdo
+ * visível, um teste de filtro que não testava o filtro: `leagueId` é o dado
+ * sobre o qual o filtro opera, então falsificá-lo põe o dev olhando o
+ * falsificador.
+ *
+ * Este teste é a guarda. Ele compara o multiconjunto de ligas do mock com o da
+ * captura: qualquer reetiquetagem futura muda as contagens e fica vermelho.
+ */
+test('o mock preserva o leagueId real da captura', { skip: temCaptura ? false : motivo }, () => {
+  const tmp = path.join(os.tmpdir(), `mock-liga-${process.pid}.json`);
+
+  try {
+    execFileSync(process.execPath, ['tools/make-mock.mjs', 'saudavel', tmp], { stdio: 'pipe' });
+    const corpo = JSON.parse(fs.readFileSync(tmp, 'utf8'));
+
+    // A captura vem do PowerShell com BOM; `JSON.parse` engasga nela.
+    const cru = JSON.parse(fs.readFileSync(CAPTURA, 'utf8').replace(/^﻿/, ''));
+    const daCaptura = toFixturesWithReport(cru).fixtures;
+
+    const conta = (lista) => {
+      const m = new Map();
+      for (const f of lista) m.set(f.leagueId, (m.get(f.leagueId) ?? 0) + 1);
+      return [...m].sort((a, b) => a[0].localeCompare(b[0]));
+    };
+
+    // Sem isto, um gerador que devolvesse zero partidas passaria: dois mapas
+    // vazios são iguais.
+    assert.ok(daCaptura.length > 20, 'captura pequena demais para a comparação valer');
+    assert.deepEqual(conta(corpo.fixtures), conta(daCaptura),
+      'o mock alterou a distribuição de ligas da captura');
+
+    // CONTROLE NEGATIVO: a captura de fato não tem liga da semente. Se um dia
+    // tiver, este assert cai e o cenário `vazio` precisa ser repensado — é o
+    // aviso, não um teste a relaxar.
+    const semente = new Set(DEFAULT_LEAGUE_IDS.map(String));
+    assert.equal(
+      corpo.fixtures.filter((f) => semente.has(f.leagueId)).length, 0,
+      'a captura passou a ter liga da semente: o cenário `vazio` deixou de ser vazio',
+    );
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
 });
