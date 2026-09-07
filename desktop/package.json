@@ -1,0 +1,15 @@
+{
+  "name": "placar-futebol-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Casca Electron do placar — entregável 2. O entregável web (raiz) continua sem dependência.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "mock": "electron . --mock",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "devDependencies": {
+    "electron": "^44.2.0"
+  }
+}
