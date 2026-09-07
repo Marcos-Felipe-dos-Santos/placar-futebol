@@ -136,7 +136,7 @@ body {
 
 .grade {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 0.75rem;
 }
 
@@ -167,8 +167,25 @@ body {
   gap: 0.4rem;
   margin-top: 0.6rem;
 }
-.time { font-size: 0.95rem; }
-.cartao-placar .time:last-of-type { text-align: right; }
+.time {
+  font-size: 0.95rem;
+  line-height: 1.25;
+
+  /* Item de grid tem `min-width: auto`, entao um nome longo EMPURRA a coluna
+     `1fr` e tira o placar do eixo central — era o que "IFK Norrkoping" fazia.
+     Com `min-width: 0` a coluna respeita o `1fr` e o nome quebra dentro dela. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+
+  /* Caixa de DUAS linhas SEMPRE, mesmo para nome curto. Sem altura reservada,
+     um cartao cujo nome quebra fica mais alto que os vizinhos e o placar sai
+     do eixo em toda a fila. Dimensionado para "Red Bull Bragantino", que
+     quebra em "Red Bull" / "Bragantino". */
+  min-height: 2.5em;
+  display: flex;
+  align-items: center;
+}
+.cartao-placar .time:last-of-type { justify-content: flex-end; text-align: right; }
 .gols { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .x { color: var(--fraco); }
 
@@ -183,7 +200,8 @@ body {
   padding: 0.2rem 0.5rem;
   cursor: pointer;
 }
-.favorita[aria-pressed="true"] { color: var(--ambar); border-color: var(--ambar); }
+.favorita[aria-pressed="true"],
+.favorita-liga[aria-pressed="true"] { color: var(--ambar); border-color: var(--ambar); }
 
 /* Gol: pisca uma vez. Reforço visual do som, para quem está com o som mudo. */
 @keyframes gol {

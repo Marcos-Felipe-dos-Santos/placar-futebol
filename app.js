@@ -422,10 +422,11 @@ function renderGrade(visiveis) {
     linha.append(el('span', 'time', f.awayName));
     cartao.append(linha);
 
-    const fav = el('button', 'favorita', favoritasPartida.has(f.id) ? '★' : '☆');
+    const fixada = favoritasPartida.has(f.id);
+    const fav = el('button', 'favorita', fixada ? '✓ Fixada' : 'Fixar');
     fav.type = 'button';
-    fav.title = 'Fixar no overlay';
-    fav.setAttribute('aria-pressed', String(favoritasPartida.has(f.id)));
+    fav.title = 'Fixar esta partida no overlay flutuante';
+    fav.setAttribute('aria-pressed', String(fixada));
     fav.addEventListener('click', () => {
       if (favoritasPartida.has(f.id)) favoritasPartida.delete(f.id);
       else favoritasPartida.add(f.id);
@@ -434,9 +435,11 @@ function renderGrade(visiveis) {
     });
     cartao.append(fav);
 
-    const favLiga = el('button', 'favorita-liga', favoritas.includes(f.leagueId) ? 'liga ★' : 'liga ☆');
+    const ligaFav = favoritas.includes(f.leagueId);
+    const favLiga = el('button', 'favorita-liga', ligaFav ? '★ Liga' : '☆ Liga');
     favLiga.type = 'button';
-    favLiga.title = 'Favoritar a competição (aparece no filtro)';
+    favLiga.title = 'Favoritar a competição (entra no filtro de ligas)';
+    favLiga.setAttribute('aria-pressed', String(ligaFav));
     favLiga.addEventListener('click', () => {
       favoritas = favoritas.includes(f.leagueId)
         ? favoritas.filter((id) => id !== f.leagueId)
