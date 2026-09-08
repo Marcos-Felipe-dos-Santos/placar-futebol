@@ -56,7 +56,7 @@ import {
  * API-Football é secret do painel do Cloudflare e não passa nem perto do
  * cliente.
  */
-const API_PADRAO = 'https://placar-futebol.SEU-SUBDOMINIO.workers.dev/api/live';
+const API_PADRAO = 'https://placar-futebol.marcosfeliperigoto.workers.dev/api/live';
 
 /**
  * Origem do dado. `index.html?api=./mock-api.json` aponta para o mock local

@@ -94,23 +94,6 @@ test('CONTRATO 2: o navegador nunca chama a API-Football', () => {
   assert.match(app, /fetch\(API_URL/);
 });
 
-test('PUBLICAÇÃO: a URL do Worker ainda é o placeholder — troque ao publicar', () => {
-  // Este teste existe porque o placeholder DEGRADA BEM DEMAIS. Com a URL não
-  // configurada o fetch falha, `falhaDeRede` fica true e a página mostra
-  // "sem dados do servidor" — que é a degradação correta e, justamente por
-  // isso, indistinguível de um pipeline quebrado. O dev abriria a página, veria
-  // a faixa vermelha e procuraria o bug no Worker.
-  //
-  // Então o silêncio acusa aqui, e não na tela: enquanto a constante for o
-  // placeholder, este teste diz o que fazer. **Depois de trocar a URL, apague
-  // este teste** — ele terminou o trabalho dele.
-  assert.match(
-    app,
-    /const API_PADRAO = 'https:\/\/placar-futebol\.SEU-SUBDOMINIO\.workers\.dev\/api\/live'/,
-    'A URL do Worker mudou. Se você acabou de publicar, apague este teste; ele existia só '
-    + 'para o placeholder não passar despercebido.',
-  );
-});
 
 test('o override de origem passa por resolveApiUrl, não por checagem solta', () => {
   // A validação é lógica e mora em módulo puro com teste próprio
@@ -124,6 +107,20 @@ test('o override de origem passa por resolveApiUrl, não por checagem solta', ()
     'app.js reimplementou a validação de origem por fora de resolveApiUrl',
   );
 });
+
+// O TRIPWIRE DA PUBLICAÇÃO VIVEU AQUI e foi removido em 2026-09-07, seguindo a
+// instrução dele mesmo. Ele exigia que `API_PADRAO` fosse o placeholder, e
+// existia porque o placeholder DEGRADA BEM DEMAIS: o fetch falha, a página
+// mostra "sem dados do servidor" — degradação correta e, por isso,
+// indistinguível de pipeline quebrado.
+//
+// Funcionou como projetado. No dia da publicação o dev abriu a página, viu a
+// faixa vermelha e foi procurar o bug no Worker — diagnosticou CORS. Era a URL
+// não trocada, exatamente o que o teste previa em prosa.
+//
+// FICA A FORMA, que vale para o próximo placeholder: um valor de configuração
+// cuja ausência degrada BEM merece um teste que falhe até ser configurado, com
+// a instrução de remoção escrita na própria mensagem.
 
 test('CONTRATO 3: nenhuma dependência e nenhum build', () => {
   // Este teste é dono do `package.json` da RAIZ. A varredura da ÁRVORE inteira,

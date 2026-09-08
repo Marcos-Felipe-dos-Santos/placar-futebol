@@ -34,3 +34,11 @@ live-*.json
 agenda-*.json
 leagues-*.json
 mock-*.json
+
+# Artefatos de ferramenta, nunca versionados.
+# .wrangler/ guarda cache de conta do wrangler (id e nome da conta, e o nome
+# costuma conter o e-mail). dist/ e a saida de `wrangler deploy --dry-run`.
+# Os dois entraram num commit por `git add -A` em 2026-09-07 e foram removidos
+# antes do push.
+.wrangler/
+dist/

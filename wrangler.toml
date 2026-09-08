@@ -31,7 +31,7 @@ compatibility_date = "2026-09-03"
 # `id` é preenchido ao criar o namespace; o valor não é segredo.
 [[kv_namespaces]]
 binding = "PLACAR_KV"
-id = "PREENCHER_COM_O_ID_DO_NAMESPACE"
+id = "37efd2d3eec446a193451ea840b44d80"
 
 # --- Cron --------------------------------------------------------------------
 # Dispara a cada minuto. O minuto é só a granularidade da DECISÃO — não é o

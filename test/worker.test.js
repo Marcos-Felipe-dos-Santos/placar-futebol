@@ -4,6 +4,7 @@ import worker, { KV_SNAPSHOT_KEY, KV_STATE_KEY, KV_AGENDA_KEY, __resetIsolateSta
 import { buildSnapshot, parseSnapshot } from '../src/core/snapshot.js';
 import { BACKOFF_MAX_MS } from '../src/core/backoff.js';
 import { applySnapshot } from '../src/core/session.js';
+import { ORIGENS_PERMITIDAS } from '../src/worker/http.js';
 import { makeFixture } from './helpers/fixtures.js';
 import { primeiroTempo, segundoTempo, envelopeVazio } from './helpers/apiFootballSamples.js';
 
@@ -287,11 +288,80 @@ test('sem snapshot ainda, responde 503 e não 200 vazio', async () => {
   assert.equal(resultado.status, 503);
 });
 
-test('a resposta permite leitura pelo GitHub Pages', async () => {
+/** Requisição de navegador: com header `Origin`. */
+function pedidoDe(origem, url = 'https://w.dev/api/live') {
+  return new Request(url, { headers: { 'cf-connecting-ip': '1.2.3.4', origin: origem } });
+}
+
+test('CORS: as origens da allowlist são ecoadas, e só elas', async () => {
+  const kv = fakeKV({ [KV_SNAPSHOT_KEY]: snapshotGravado() });
+
+  // POSITIVO. Sem estes, um `origemPermitida` que devolvesse `null` sempre
+  // passaria em todos os negativos abaixo e o produto estaria quebrado com a
+  // suíte verde — é o modo de falha que esta troca de `*` por lista introduz.
+  for (const boa of ORIGENS_PERMITIDAS) {
+    const { resultado } = await comFetchEspiao(null, () => worker.fetch(pedidoDe(boa), env(kv), {}));
+    assert.equal(resultado.headers.get('access-control-allow-origin'), boa, `origem legítima recusada: ${boa}`);
+  }
+
+  // NEGATIVO. `evil.github.io` é o caso que uma checagem por sufixo liberaria,
+  // e `github.io` inteiro é território de terceiros. Os dois últimos são a
+  // mesma origem com porta e esquema trocados: origem é a tripla exata.
+  for (const ruim of [
+    'https://evil.com',
+    'https://evil.github.io',
+    'https://marcos-felipe-dos-santos.github.io.evil.com',
+    'http://marcos-felipe-dos-santos.github.io',
+    'http://localhost:3000',
+  ]) {
+    const { resultado } = await comFetchEspiao(null, () => worker.fetch(pedidoDe(ruim), env(kv), {}));
+    assert.equal(resultado.headers.get('access-control-allow-origin'), null, `origem liberada indevidamente: ${ruim}`);
+    // E o corpo continua sendo servido: quem bloqueia é o navegador, não nós.
+    assert.equal(resultado.status, 200, 'a resposta virou erro em vez de só não liberar');
+  }
+});
+
+test('CORS: sem header Origin a resposta funciona e não ganha o header', async () => {
+  // `curl`, PowerShell, o wrangler. CORS não se aplica: não mandar o header
+  // não bloqueia ninguém, e mandá-lo seria afirmar uma permissão que ninguém
+  // pediu.
   const kv = fakeKV({ [KV_SNAPSHOT_KEY]: snapshotGravado() });
   const { resultado } = await comFetchEspiao(null, () => worker.fetch(pedido(), env(kv), {}));
-  assert.ok(resultado.headers.get('access-control-allow-origin'), 'sem CORS a página não lê nada');
+  assert.equal(resultado.status, 200);
+  assert.equal(resultado.headers.get('access-control-allow-origin'), null);
   assert.match(resultado.headers.get('content-type') ?? '', /application\/json/);
+});
+
+test('CORS: Vary: Origin em TODA resposta, liberada ou não', async () => {
+  // A resposta passou a depender do header `Origin`. Sem `Vary`, um cache
+  // intermediário serve a uma origem o que foi montado para outra — liberando
+  // quem não devia ou bloqueando quem devia. É o header que o `*` dispensava.
+  const kv = fakeKV({ [KV_SNAPSHOT_KEY]: snapshotGravado() });
+  for (const p of [pedido(), pedidoDe('https://evil.com'), pedidoDe(ORIGENS_PERMITIDAS[0])]) {
+    const { resultado } = await comFetchEspiao(null, () => worker.fetch(p, env(kv), {}));
+    assert.match(resultado.headers.get('vary') ?? '', /Origin/i);
+  }
+});
+
+test('CORS: a resposta de ERRO também é legível pela página', async () => {
+  // Sem CORS no 503, o navegador esconde o corpo e a página mostra "sem dados
+  // do servidor" no lugar de "sem snapshot ainda" — o diagnóstico some
+  // exatamente no caso em que ele importa.
+  const kv = fakeKV({});
+  const { resultado } = await comFetchEspiao(null, () =>
+    worker.fetch(pedidoDe(ORIGENS_PERMITIDAS[0]), env(kv), {}),
+  );
+  assert.equal(resultado.status, 503);
+  assert.equal(resultado.headers.get('access-control-allow-origin'), ORIGENS_PERMITIDAS[0]);
+});
+
+test('CORS: a allowlist é a decidida — crescer é decisão do dev', () => {
+  assert.deepEqual([...ORIGENS_PERMITIDAS].sort(), [
+    'http://127.0.0.1:8080',
+    'http://localhost:8080',
+    'https://marcos-felipe-dos-santos.github.io',
+    'placar://app',
+  ]);
 });
 
 test('método não autorizado devolve 405 com Allow', async () => {

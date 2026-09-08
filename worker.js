@@ -45,7 +45,7 @@ import {
   parseStoredAgenda,
   decideAgendaFetch,
 } from './src/core/agenda.js';
-import { checkRateLimit, routeRequest } from './src/worker/http.js';
+import { checkRateLimit, routeRequest, origemPermitida } from './src/worker/http.js';
 
 export const KV_SNAPSHOT_KEY = 'snapshot';
 export const KV_STATE_KEY = 'state';
@@ -345,9 +345,10 @@ function json(corpo, status, headers = {}) {
     status,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      // A página é servida pelo GitHub Pages, outra origem. Sem isto o
-      // navegador bloqueia a leitura e a grade fica vazia sem erro visível.
-      'access-control-allow-origin': '*',
+      // O CORS NÃO é decidido aqui. Ele é aplicado num lugar só, no
+      // `fetch` do export default, por `comCors` — porque `json` é chamada de
+      // seis pontos e uma rota nova acrescentada amanhã esqueceria o header
+      // sem que nada acusasse. Ver `origemPermitida` em `src/worker/http.js`.
       'cache-control': 'no-store',
       ...headers,
     },
@@ -416,6 +417,36 @@ async function handleFetch(request, env) {
   // continua sendo superconjunto do `Snapshot` do modelo interno, que é o que
   // deixa `applySnapshot` consumi-lo sem tradução. Há teste guardando isso.
   return json({ ...snapshot, cron }, 200);
+}
+
+/**
+ * Aplica a política de origem na resposta pronta.
+ *
+ * Um lugar só, no limite da requisição: `json` é chamada de seis pontos, e uma
+ * rota nova acrescentada amanhã herdaria o CORS sem que ninguém precisasse
+ * lembrar. Mesma razão pela qual a guarda do recorte mora dentro do helper.
+ *
+ * @param {Response} resposta
+ * @param {string|null} origem  O header `Origin`, ou `null`.
+ * @returns {Response}
+ */
+function comCors(resposta, origem) {
+  const headers = new Headers(resposta.headers);
+
+  // `Vary: Origin` SEMPRE, inclusive quando nada é liberado. A resposta agora
+  // depende do header `Origin`, e sem isto um cache intermediário pode servir
+  // a uma origem a resposta que foi montada para outra — liberando quem não
+  // devia, ou bloqueando quem devia. É o header que o `*` não precisava.
+  headers.set('vary', 'Origin');
+
+  const permitida = origemPermitida(origem);
+  if (permitida !== null) headers.set('access-control-allow-origin', permitida);
+
+  return new Response(resposta.body, {
+    status: resposta.status,
+    statusText: resposta.statusText,
+    headers,
+  });
 }
 
 /**
@@ -501,12 +532,20 @@ async function handleScheduled(event, env) {
       // existe, e no minuto seguinte tudo se repete.
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
-  } catch {
+  } catch (erro) {
+    // DIAGNÓSTICO. Sem isto o `state` guarda a CONTAGEM de falhas e nunca o
+    // motivo, e `consecutiveFailures: 4` no envelope é indistinguível entre
+    // timeout, chave recusada e resposta fora do contrato. É a lição do
+    // CLAUDE.md aplicada a si mesma: a regra de não escrever apagou a
+    // observabilidade do caminho suprimido. Nada aqui contém a chave — ela
+    // vai no header, e o header não é logado.
+    console.error('cron: falha de rede/timeout na busca ao vivo:', String(erro && erro.name));
     await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false });
     return;
   }
 
   if (!resposta.ok) {
+    console.error('cron: upstream respondeu', resposta.status, 'na busca ao vivo');
     await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: resposta.status === 429 });
     return;
   }
@@ -519,7 +558,13 @@ async function handleScheduled(event, env) {
     // preenchido (que vem com HTTP 200), em truncamento e quando nenhuma
     // partida é utilizável. Todos esses são falha, não "zero jogos".
     relatorio = toFixturesWithReport(await resposta.json());
-  } catch {
+  } catch (erro) {
+    // O caminho MAIS provável e o mais silencioso: a API-Football devolve HTTP
+    // 200 com `errors` preenchido para chave inválida, plano sem acesso e
+    // cota estourada. Sem esta linha, os três chegam ao dev como o mesmo
+    // número. A mensagem vem do adaptador e cita o `errors` da resposta —
+    // que é dado do provedor, nunca a nossa chave.
+    console.error('cron: resposta fora do contrato na busca ao vivo:', String(erro && erro.message));
     await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false }, quotaRemaining);
     return;
   }
@@ -684,10 +729,16 @@ export default {
    */
   async fetch(request, env, ctx) {
     void ctx;
+    // A origem é lida UMA VEZ, aqui, e o CORS é aplicado na saída — inclusive
+    // na resposta de erro. Um `catch` que devolvesse 500 sem o header faria o
+    // navegador esconder o corpo e a página mostrar "sem dados do servidor"
+    // no lugar de "erro interno": o diagnóstico sumiria justamente no caso em
+    // que ele importa.
+    const origem = request.headers.get('origin');
     try {
-      return await handleFetch(request, env);
+      return comCors(await handleFetch(request, env), origem);
     } catch {
-      return json({ error: 'erro interno' }, 500);
+      return comCors(json({ error: 'erro interno' }, 500), origem);
     }
   },
 

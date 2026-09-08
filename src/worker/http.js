@@ -89,3 +89,56 @@ export function checkRateLimit(state, ip, nowMs, options = {}) {
   state.set(key, marcas);
   return { allowed: true };
 }
+
+/**
+ * ORIGENS PERMITIDAS a ler `/api/live` de dentro de um navegador.
+ *
+ * Substitui um `access-control-allow-origin: *`. O que o `*` custava não é
+ * óbvio, porque o endpoint é público e não tem credencial: qualquer um busca
+ * pelo `curl`. O que ele dava de graça era **outra página web embutir este
+ * Worker como backend** — o custo da cota é do dono da chave, e a cota é de
+ * 100 requisições/dia para a chave inteira. A allowlist não protege segredo;
+ * protege orçamento.
+ *
+ * Lista fechada e exata. Comparação por igualdade, não por sufixo: um
+ * `endsWith('.github.io')` liberaria `evil.github.io`, e `github.io` inteiro
+ * é território de terceiros.
+ */
+export const ORIGENS_PERMITIDAS = Object.freeze([
+  // Pages — o entregável 1 publicado.
+  'https://marcos-felipe-dos-santos.github.io',
+
+  // Dev local. As duas formas porque o navegador manda o que o dev digitou, e
+  // `localhost` e `127.0.0.1` são origens DIFERENTES para o CORS.
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+
+  // Casca desktop. O renderer carrega a página pelo esquema `placar://`, que é
+  // registrado como `standard` e portanto tem origem própria — para o Worker
+  // ele é tão cross-origin quanto o Pages.
+  //
+  // NÃO VERIFICADO: nenhuma requisição da casca chegou ao Worker publicado
+  // ainda (o 6c é que liga a página ao poll dentro do Electron). Se o Chromium
+  // mandar algo diferente daqui, o sintoma é a casca com "Sem dados do
+  // servidor" e a página web funcionando — e o conserto é uma linha nesta
+  // lista, lida do header `origin` no `wrangler tail`.
+  'placar://app',
+]);
+
+/**
+ * A origem a ecoar no `access-control-allow-origin`, ou `null` para não mandar
+ * o header.
+ *
+ * **Ausência de `Origin` devolve `null` e isso está certo.** Requisição sem
+ * `Origin` não vem de navegador — é `curl`, PowerShell, o `wrangler`. CORS não
+ * se aplica a ela, e ela continua funcionando normalmente: o header só existe
+ * para o navegador decidir se ENTREGA a resposta ao script. Não mandá-lo não
+ * bloqueia ninguém que já não estivesse bloqueado.
+ *
+ * @param {string|null|undefined} origin  O header `Origin` da requisição.
+ * @returns {string|null}
+ */
+export function origemPermitida(origin) {
+  if (typeof origin !== 'string' || origin === '') return null;
+  return ORIGENS_PERMITIDAS.includes(origin) ? origin : null;
+}
