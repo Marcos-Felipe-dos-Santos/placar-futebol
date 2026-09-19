@@ -562,8 +562,9 @@ async function handleScheduled(event, env) {
     const jsonPayload = await resposta.json();
     const hasErrors = jsonPayload && jsonPayload.errors && (Array.isArray(jsonPayload.errors) ? jsonPayload.errors.length > 0 : Object.keys(jsonPayload.errors).length > 0);
     if (hasErrors) {
+      const isRateLimit = !Array.isArray(jsonPayload.errors) && Object.hasOwn(jsonPayload.errors, 'rateLimit');
       console.error('cron: HTTP 200 with a populated errors field:', JSON.stringify(jsonPayload.errors));
-      await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false }, quotaRemaining, 'api_errors');
+      await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: isRateLimit }, quotaRemaining, 'api_errors');
       return;
     }
 
