@@ -175,6 +175,9 @@ export const __CAMPOS_NAO_DIARIOS = Object.freeze({
     'Escada de backoff, não gasto. Um upstream que está fora do ar às 23:59 '
     + 'continua fora às 00:01, e zerar reiniciaria a escada no primeiro degrau '
     + 'justamente quando ela é mais necessária.',
+  failureReason:
+    'O motivo da falha serve apenas para log de diagnostico. Ele atravessa dias ' +
+    'assim como consecutiveFailures, ate que a proxima chamada o apague.',
   backoffUntilMs:
     'Instante absoluto de quando voltar a tentar. Mesmo motivo de '
     + '`consecutiveFailures`.',
@@ -186,6 +189,7 @@ const ESTADO_INICIAL = {
   spentToday: 0,
   dayKeyUTC: '',
   consecutiveFailures: 0,
+  failureReason: null,
   backoffUntilMs: 0,
   // Contabilidade da busca da agenda. INTERNA: nada disto vai para o cliente
   // — o que a página mostra quando falta agenda é o `reason: 'no-agenda'` do
@@ -211,6 +215,7 @@ function normalizeState(bruto) {
     spentToday: num(s.spentToday, 0),
     dayKeyUTC: typeof s.dayKeyUTC === 'string' ? s.dayKeyUTC : '',
     consecutiveFailures: num(s.consecutiveFailures, 0),
+    failureReason: typeof s.failureReason === "string" ? s.failureReason : null,
     backoffUntilMs: num(s.backoffUntilMs, 0),
     agendaAttemptsToday: num(s.agendaAttemptsToday, 0),
     // Fallback explícito para `null` e não `undefined`, pelo mesmo motivo do
@@ -539,14 +544,14 @@ async function handleScheduled(event, env) {
     // CLAUDE.md aplicada a si mesma: a regra de não escrever apagou a
     // observabilidade do caminho suprimido. Nada aqui contém a chave — ela
     // vai no header, e o header não é logado.
-    console.error('cron: falha de rede/timeout na busca ao vivo:', String(erro && erro.name));
-    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false });
+    console.error('cron: network error / fetch threw:', String(erro && erro.name));
+    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false }, null, 'network_error');
     return;
   }
 
   if (!resposta.ok) {
-    console.error('cron: upstream respondeu', resposta.status, 'na busca ao vivo');
-    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: resposta.status === 429 });
+    console.error('cron: HTTP status != 200:', resposta.status);
+    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: resposta.status === 429 }, null, 'http_error_' + resposta.status);
     return;
   }
 
@@ -554,18 +559,26 @@ async function handleScheduled(event, env) {
 
   let relatorio;
   try {
+    const jsonPayload = await resposta.json();
+    const hasErrors = jsonPayload && jsonPayload.errors && (Array.isArray(jsonPayload.errors) ? jsonPayload.errors.length > 0 : Object.keys(jsonPayload.errors).length > 0);
+    if (hasErrors) {
+      console.error('cron: HTTP 200 with a populated errors field:', JSON.stringify(jsonPayload.errors));
+      await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false }, quotaRemaining, 'api_errors');
+      return;
+    }
+
     // `toFixturesWithReport` lança em envelope inválido, em `errors`
     // preenchido (que vem com HTTP 200), em truncamento e quando nenhuma
     // partida é utilizável. Todos esses são falha, não "zero jogos".
-    relatorio = toFixturesWithReport(await resposta.json());
+    relatorio = toFixturesWithReport(jsonPayload);
   } catch (erro) {
     // O caminho MAIS provável e o mais silencioso: a API-Football devolve HTTP
     // 200 com `errors` preenchido para chave inválida, plano sem acesso e
     // cota estourada. Sem esta linha, os três chegam ao dev como o mesmo
     // número. A mensagem vem do adaptador e cita o `errors` da resposta —
     // que é dado do provedor, nunca a nossa chave.
-    console.error('cron: resposta fora do contrato na busca ao vivo:', String(erro && erro.message));
-    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false }, quotaRemaining);
+    console.error('cron: response that fails the adapter contract:', String(erro && erro.message));
+    await registrarFalha(kv, estado, caixa, nowMs, { rateLimited: false }, quotaRemaining, 'contract_violation');
     return;
   }
 
@@ -599,6 +612,7 @@ async function handleScheduled(event, env) {
       dayKeyUTC: dayKeyUTC(nowMs),
       consecutiveFailures: 0,
       backoffUntilMs: 0,
+      failureReason: null,
     }),
   );
   await kv.put(KV_SNAPSHOT_KEY, JSON.stringify(snapshot));
@@ -704,7 +718,7 @@ async function buscarAgenda(kv, env, estado, caixa, nowMs, hojeUTC) {
  * @param {{rateLimited: boolean}} contexto
  * @param {number|null} [quotaRemaining]
  */
-async function registrarFalha(kv, estado, caixa, nowMs, contexto, quotaRemaining = null) {
+async function registrarFalha(kv, estado, caixa, nowMs, contexto, quotaRemaining = null, reason = "unknown") {
   const falhas = estado.consecutiveFailures + 1;
   await kv.put(
     KV_STATE_KEY,
@@ -717,6 +731,7 @@ async function registrarFalha(kv, estado, caixa, nowMs, contexto, quotaRemaining
       dayKeyUTC: dayKeyUTC(nowMs),
       consecutiveFailures: falhas,
       backoffUntilMs: nowMs + nextBackoffMs(falhas, contexto),
+      failureReason: reason,
     }),
   );
 }
